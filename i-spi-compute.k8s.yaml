@@ -1,0 +1,170 @@
+# =============================================================================
+# i-spi-compute — Kubernetes manifests (namespace: madi-preprod)
+#
+# A NEW, parallel stack that must NOT collide with the running production batch
+# calculator. The existing prod stack uses:
+#   - services/pods:  immunoplex-batch-cal-api, immunoplex-batch-cal-worker,
+#                     redis-batch-cal   (+ a separate general "redis")
+#   - secret:         immunoplex-batch-cal  (keys API_KEY, REDIS_AUTH)
+# This new stack uses distinct names (i-spi-compute-*) and its OWN secret
+# (i-spi-compute) so the two run side by side on the same cluster/DB with no
+# shared Redis queue.
+#
+# Naming:
+#   curveR            = the science (R packages), deployed independently
+#   i-spi-compute     = this application tier (api + worker + redis)
+#   i-spi             = the Shiny front end this tier serves (unchanged here)
+#
+# PREREQUISITES (do these first; see SECRETS.md):
+#   1. Create the new secret (fresh API_KEY + REDIS_AUTH):
+#        kubectl -n madi-preprod create secret generic i-spi-compute \
+#          --from-literal=API_KEY="$(openssl rand -hex 32)" \
+#          --from-literal=REDIS_AUTH="$(openssl rand -hex 32)"
+#      The DB password is NOT duplicated here — the worker references the
+#      existing secret madi-lumi-reader/db_pwd_x (same DB user d78039e).
+#   2. Apply calib_schema_v1.sql to the database once (out of band).
+#   3. Add a Traefik route for /compute-api -> Service i-spi-compute-api:8000
+#      (mirrors the prod /batch-api route; kept separate so both run in parallel).
+#
+# Images are built by CI to ghcr.io/immunoplex/i-spi-compute-{api,worker}:main.
+# =============================================================================
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Redis (dedicated queue for this stack)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: i-spi-compute-redis
+  namespace: madi-preprod
+  labels: { app: i-spi-compute-redis }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: i-spi-compute-redis }
+  template:
+    metadata:
+      labels: { app: i-spi-compute-redis }
+    spec:
+      imagePullSecrets: [{ name: regcred }]
+      containers:
+        - name: i-spi-compute-redis
+          image: redis:7
+          imagePullPolicy: IfNotPresent
+          args: ["--requirepass", "$(REDIS_AUTH)"]
+          env:
+            - name: REDIS_AUTH
+              valueFrom: { secretKeyRef: { name: i-spi-compute, key: REDIS_AUTH } }
+          ports:
+            - { containerPort: 6379, name: redis, protocol: TCP }
+          readinessProbe:
+            tcpSocket: { port: 6379 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: i-spi-compute-redis
+  namespace: madi-preprod
+spec:
+  selector: { app: i-spi-compute-redis }
+  ports:
+    - { port: 6379, targetPort: 6379, protocol: TCP, name: redis }
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# API (FastAPI)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: i-spi-compute-api
+  namespace: madi-preprod
+  labels: { app: i-spi-compute-api }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: i-spi-compute-api }
+  template:
+    metadata:
+      labels: { app: i-spi-compute-api }
+    spec:
+      imagePullSecrets: [{ name: regcred }]
+      containers:
+        - name: i-spi-compute-api
+          image: ghcr.io/immunoplex/i-spi-compute-api:main
+          imagePullPolicy: Always
+          env:
+            - { name: REDIS_HOST, value: i-spi-compute-redis }   # <-- new dedicated Redis
+            - { name: REDIS_PORT, value: "6379" }
+            - { name: REDIS_DB,   value: "0" }
+            - name: REDIS_AUTH
+              valueFrom: { secretKeyRef: { name: i-spi-compute, key: REDIS_AUTH } }
+            - name: API_KEY
+              valueFrom: { secretKeyRef: { name: i-spi-compute, key: API_KEY } }
+            - { name: ROOT_PATH,  value: /compute-api }          # <-- distinct from prod /batch-api
+          ports:
+            - { containerPort: 8000, name: http, protocol: TCP }
+          readinessProbe:
+            httpGet: { path: /health, port: 8000, scheme: HTTP }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits:   { cpu: 500m, memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: i-spi-compute-api
+  namespace: madi-preprod
+spec:
+  selector: { app: i-spi-compute-api }
+  ports:
+    - { port: 8000, targetPort: 8000, protocol: TCP, name: http }
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Worker (Python supervisor + R curveR engine)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: i-spi-compute-worker
+  namespace: madi-preprod
+  labels: { app: i-spi-compute-worker }
+spec:
+  replicas: 1                       # scale = more workers popping the same queue
+  selector:
+    matchLabels: { app: i-spi-compute-worker }
+  template:
+    metadata:
+      labels: { app: i-spi-compute-worker }
+    spec:
+      imagePullSecrets: [{ name: regcred }]
+      nodeSelector:
+        kubernetes.io/arch: amd64   # Stan models are precompiled for amd64
+      containers:
+        - name: i-spi-compute-worker
+          image: ghcr.io/immunoplex/i-spi-compute-worker:main
+          imagePullPolicy: Always
+          env:
+            - { name: REDIS_HOST, value: i-spi-compute-redis }   # <-- new dedicated Redis
+            - { name: REDIS_PORT, value: "6379" }
+            - { name: REDIS_DB,   value: "0" }
+            - name: REDIS_AUTH
+              valueFrom: { secretKeyRef: { name: i-spi-compute, key: REDIS_AUTH } }
+            # --- database (same physical DB + credential as prod) ---
+            - { name: DB_NAME,    value: postgres }
+            - { name: DB_HOST,    value: mlr-c3d7-db.c.dartmouth.edu }
+            - { name: DB_PORT,    value: "5432" }
+            - { name: DB_USER,    value: d78039e }
+            - name: DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: madi-lumi-reader, key: db_pwd_x } }
+            - { name: DB_SSLMODE, value: require }
+            - { name: PROGRESS_DIR, value: /tmp }
+            # --- CPU cap: MUST equal the CPU limit below (detectCores is not
+            #     cgroup-aware). Also caps Stan parallel_chains. ---
+            - { name: WORKER_CORES, value: "4" }
+          resources:
+            requests: { cpu: "1",  memory: 2Gi }
+            limits:   { cpu: "4",  memory: 4Gi }   # tune to study size; keep == WORKER_CORES

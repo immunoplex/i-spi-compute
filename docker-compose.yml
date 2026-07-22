@@ -1,0 +1,76 @@
+# =============================================================================
+# docker-compose.yml — Local Development Stack (i-spi-compute)
+#
+# Services:
+#   i-spi-compute-redis   — Redis 7 for job queue and status
+#   i-spi-compute-api     — FastAPI batch job API (port 8000)
+#   i-spi-compute-worker  — R worker with Python supervisor
+#
+# Secrets: values come from a .env file in this directory (plain KEY=value,
+# no `export`). See SECRETS.md and .env.example. For a throwaway local run you
+# may hard-code dev values instead, as shown below.
+#
+# Usage:
+#   docker compose up --build
+#
+#   # Submit a job:
+#   curl -X POST http://localhost:8000/jobs \
+#     -H "Content-Type: application/json" \
+#     -H "X-API-Key: ${API_KEY}" \
+#     -d '{"project_id":1,"study":"MY_STUDY","experiment":"EXP1","scope":"experiment"}'
+#
+#   # Swagger docs:  open http://localhost:8000/docs
+# =============================================================================
+
+services:
+  i-spi-compute-redis:
+    image: redis:7
+    ports:
+      - "6380:6379"
+    command: ["redis-server", "--requirepass", "${REDIS_AUTH:-devpassword}"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_AUTH:-devpassword}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  i-spi-compute-api:
+    build:
+      context: ./api
+      dockerfile: api.Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      REDIS_HOST: i-spi-compute-redis
+      REDIS_PORT: "6379"
+      REDIS_AUTH: ${REDIS_AUTH:-devpassword}
+      REDIS_DB: "0"
+      API_KEY: ${API_KEY:-dev-key-immunoplex}
+    depends_on:
+      i-spi-compute-redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  i-spi-compute-worker:
+    build:
+      context: ./worker
+      dockerfile: worker.Dockerfile
+    environment:
+      # Redis
+      REDIS_HOST: i-spi-compute-redis
+      REDIS_PORT: "6379"
+      REDIS_AUTH: ${REDIS_AUTH:-devpassword}
+      REDIS_DB: "0"
+      # PostgreSQL — update these to match your local database
+      DB_NAME: ${DB_NAME:-postgres}
+      DB_HOST: ${DB_HOST:-host.docker.internal}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-}
+      DB_SSLMODE: ${DB_SSLMODE:-disable}
+      # CPU cap (also caps Stan parallel_chains). Match to your machine.
+      WORKER_CORES: ${WORKER_CORES:-4}
+    depends_on:
+      i-spi-compute-redis:
+        condition: service_healthy
+    restart: unless-stopped

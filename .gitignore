@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# R
+.Rhistory
+.RData
+.Rproj.user/
+*.RData
+worker/migrations/
+worker/scratch/
+# Docker
+.env
+
+# Output
+plots/
+*.zip
+*.html
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
