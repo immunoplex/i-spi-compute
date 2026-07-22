@@ -137,15 +137,58 @@ This stack deploys **alongside** the existing production batch calculator, so it
 gets its **own** secret (`i-spi-compute`) for the values that must be independent,
 and **reuses** the existing DB credential (same database user).
 
+### Where do I run these commands? (important)
+
+A Kubernetes Secret is a **control-plane object** — it lives in the namespace
+(etcd), not inside any application container. You create it by running `kubectl`
+against the cluster API, from **any shell that has kubectl access to the
+cluster**. You do **not** `exec` into a pod to make it. Two ways to get such a
+shell:
+
+- **Rancher's built-in kubectl shell (easiest).** In the Rancher UI, open the
+  cluster, then use the terminal/**Kubectl Shell** button (top-right of the
+  cluster view). It opens a browser terminal already authenticated to the cluster
+  — run the `kubectl` commands below there directly.
+- **Local kubectl.** In Rancher, "Download KubeConfig" for the cluster, save it to
+  `~/.kube/config` (or `export KUBECONFIG=/path/to/that.yaml`), then run `kubectl`
+  from your own terminal (Git Bash). Requires `kubectl` installed locally.
+
+Either way the commands are identical; they act on the cluster, not on a
+container. Confirm access first:
+
+```bash
+kubectl -n madi-preprod get pods        # should list the running prod pods
+```
+
+> The Rancher shell may not have `openssl`. If `openssl rand -hex 32` errors
+> there, generate the two values in your **local** Git Bash (which does have
+> openssl) and paste the literal strings into the `--from-literal=` flags below.
+
 1. **Create the new secret** with fresh `API_KEY` and `REDIS_AUTH` only:
    ```bash
    kubectl -n madi-preprod create secret generic i-spi-compute \
      --from-literal=API_KEY="$(openssl rand -hex 32)" \
      --from-literal=REDIS_AUTH="$(openssl rand -hex 32)"
    ```
+   (No openssl in the shell? Generate locally and paste literals:
+   `--from-literal=API_KEY="<64-hex>" --from-literal=REDIS_AUTH="<64-hex>"`.)
+
+   Then confirm it exists with the right keys (this shows key names + sizes, not
+   the secret values):
+   ```bash
+   kubectl -n madi-preprod describe secret i-spi-compute
+   # Data: API_KEY: 64 bytes, REDIS_AUTH: 64 bytes
+   ```
+   To replace a value later: `kubectl -n madi-preprod delete secret i-spi-compute`
+   then re-create, or `kubectl -n madi-preprod create secret generic i-spi-compute
+   --from-literal=... --dry-run=client -o yaml | kubectl apply -f -`.
+
    Do **not** put the DB password here — the worker references the existing
    secret `madi-lumi-reader` key `db_pwd_x` (the same DB user, `d78039e`, that
-   i-spi and the production worker already use).
+   i-spi and the production worker already use). Verify that one is present too:
+   ```bash
+   kubectl -n madi-preprod get secret madi-lumi-reader -o jsonpath='{.data.db_pwd_x}' | head -c 5; echo " …(exists)"
+   ```
 
 2. **Reference them** in each Deployment via `secretKeyRef` (never plain
    `value:`). These match `i-spi-compute.k8s.yaml`:

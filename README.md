@@ -1,8 +1,14 @@
-# Immunoplex Batch Runner
+# i-spi-compute
 
-Generic background job system for running computationally expensive calculations (Bayesian curve fitting, frequentist methods, etc.) outside the i-spi Shiny app. Each job specifies a `script_type` that determines which R or Python worker script runs.
+Background job system for running computationally expensive calibration-curve
+fitting (**Bayesian** and **frequentist**) outside the i-spi Shiny app. Jobs are
+submitted to a REST API, queued in Redis, and processed by worker containers that
+fit curves with the **curveR** engine and save results directly to PostgreSQL.
 
-Jobs are submitted via a REST API, queued in Redis, and processed by worker containers that save results directly to PostgreSQL.
+`i-spi-compute` is the **application tier** (api + worker + redis). The science
+lives in the separately-versioned **curveR** R packages
+(`curveRcore` / `curveRfreq` / `curveRbayes`), and **i-spi** is the Shiny front
+end this tier serves.
 
 ## Architecture
 
@@ -10,69 +16,84 @@ Jobs are submitted via a REST API, queued in Redis, and processed by worker cont
   Client (i-spi / curl)
         │
         ▼
-  ┌──────────────┐
-  │  FastAPI API  │  POST /jobs, GET /jobs/{id}, DELETE /jobs/{id}
-  │  (port 8000)  │
-  └──────┬───────┘
-         │ RPUSH job_id
-         ▼
-  ┌──────────────┐
-  │    Redis 7    │  Queue: ispi:batch:queue
-  └──────┬───────┘
-         │ BLPOP
-         ▼
-  ┌──────────────────┐
-  │  Python Supervisor │  Dispatches to SCRIPT_REGISTRY[script_type]
-  └──────┬───────────┘
-         │ subprocess
-         ▼
-  ┌──────────────────┐
-  │  Worker Script    │  bayesian → worker_batch.R (stanassay)
-  │                   │  (add more via SCRIPT_REGISTRY)
-  └──────┬───────────┘
-         │ upsert
-         ▼
-  ┌──────────────┐
-  │  PostgreSQL   │  madi_results.bayes_*
-  └──────────────┘
+  ┌────────────────────┐
+  │  i-spi-compute-api   │  POST /jobs, GET /jobs/{id}, DELETE /jobs/{id}
+  │  (FastAPI, port 8000)│
+  └──────────┬─────────┘
+             │ RPUSH job_id
+             ▼
+  ┌────────────────────┐
+  │  i-spi-compute-redis │  Queue: ispi:batch:queue
+  └──────────┬─────────┘
+             │ BLPOP
+             ▼
+  ┌──────────────────────┐
+  │  i-spi-compute-worker  │
+  │   supervisor.py        │  Dispatches SCRIPT_REGISTRY[script_type] + --method
+  │     └─ Rscript ───────┐│
+  │        worker_curveR.R ││  bayesian / frequentist (curveR + CmdStan)
+  │        + flatten_and_save.R
+  │        + verify_saved.R
+  └──────────┬───────────┘
+             │ idempotent write (delete-by-(curve_id,method) then insert)
+             ▼
+  ┌────────────────────┐
+  │      PostgreSQL      │  madi_results.calib_*
+  └────────────────────┘
 ```
+
+Both `bayesian` and `frequentist` run the **same** `worker_curveR.R`; they differ
+only in the `--method` flag. Results go to the method-agnostic `calib_*` tables
+(a `method` column distinguishes the two engines).
 
 ## Quick Start (Local Development)
 
 ```bash
 # 1. Clone
-git clone https://github.com/immunoplex/immunoplex-batch-calculator.git
-cd immunoplex-batch-calculator
+git clone https://github.com/immunoplex/i-spi-compute.git
+cd i-spi-compute
 
-# 2. Configure DB credentials (edit to match your PostgreSQL)
+# 2. Configure secrets + DB credentials
 cp .env.example .env
-# Edit .env: set DB_HOST, DB_USER, DB_PASSWORD, DB_NAME
+# Edit .env: set API_KEY, REDIS_AUTH, and DB_HOST/DB_USER/DB_PASSWORD/DB_SSLMODE.
+# Plain KEY=value lines, no `export`. See SECRETS.md.
 
 # 3. Start
 docker compose up --build
 
 # 4. Verify
-curl http://localhost:8000/health
-open http://localhost:8000/docs
+curl http://localhost:8000/health          # {"status":"ok","redis":"connected"}
+open http://localhost:8000/docs             # Swagger UI
 ```
 
-First build takes ~10 minutes (Stan C++ compilation). Subsequent builds are fast (cached layers).
+**First build takes ~20–25 minutes** — it installs CmdStan, the curveR packages,
+and precompiles the Bayesian Stan models into the image. Subsequent builds reuse
+cached layers and are fast.
+
+> Local note: if `DB_HOST` points at a campus/VPN database, the container must be
+> able to reach it (Docker Desktop's VM has its own network path). For pure
+> plumbing tests use a local Postgres; real DB-backed fitting is best run in the
+> cluster, where the worker sits on the same network as the database.
 
 ## API Reference
 
-All endpoints except `/health` require the `X-API-Key` header.
+All endpoints except `/health` require the `X-API-Key` header. If `API_KEY` is
+unset, the API falls back to the dev key `dev-key-immunoplex` (never rely on this
+in production).
 
 ### POST /jobs — Submit a Job
 
 ```bash
 curl -X POST http://localhost:8000/jobs \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: dev-key-immunoplex" \
+  -H "X-API-Key: $API_KEY" \
   -d '{
-    "project_id": 1,
-    "study": "MY_STUDY",
-    "experiment": "EXP1",
-    "scope": "experiment"
+    "project_id": 17,
+    "study": "INCEN_IN_QIV1",
+    "experiment": "FcgR2a",
+    "antigen": "B_Phuket_HA",
+    "scope": "antigen",
+    "script_type": "frequentist"
   }'
 ```
 
@@ -84,36 +105,39 @@ curl -X POST http://localhost:8000/jobs \
 | `antigen` | string | no | null | Required if scope is `antigen` |
 | `source` | string | no | null | Standard source filter |
 | `scope` | string | no | `study` | `study`, `experiment`, or `antigen` |
-| `script_type` | string | no | `bayesian` | Which worker script to run |
-| `params` | dict | no | `{}` | Script-specific params (passed as `--key value` CLI args) |
-| `cdan_cv_threshold` | float | no | `20.0` | Bayesian CDAN CV% threshold (auto-merged into params) |
+| `script_type` | string | no | `bayesian` | **`bayesian` or `frequentist`** — selects the engine |
+| `params` | dict | no | `{}` | Passthrough → each key becomes a `--key value` CLI arg |
+| `cdan_cv_threshold` | float | no | `20.0` | CV% gate (auto-merged into params as `cdan_cv`) |
+
+The `params` passthrough is how you tune the engine without any API change, e.g.:
+- `{"models": "logistic4,gompertz4"}` — restrict the model set
+- `{"chains": "4", "warmup": "1000", "sampling": "1000"}` — Bayesian Stan settings
 
 ### GET /jobs/{job_id} — Poll Status
 
 ```bash
-curl -H "X-API-Key: dev-key-immunoplex" http://localhost:8000/jobs/{job_id}
+curl -H "X-API-Key: $API_KEY" http://localhost:8000/jobs/{job_id}
 ```
-
-Key response fields for UI:
 
 | Field | Description |
 |-------|-------------|
 | `status` | `queued` → `running` → `completed` / `failed` / `cancelled` |
-| `percentage` | 0.0–100.0, suitable for progress bar |
-| `eta_display` | Human-readable time remaining (e.g. `~3 min 20 sec`) |
+| `percentage` | 0.0–100.0, suitable for a progress bar |
+| `eta_display` | Human-readable time remaining |
 | `current_experiment` | Which experiment is being processed |
-| `current_antigens` | Which antigens are being fitted |
+| `error` | Tail of the worker output on failure (null otherwise) |
+| `output_path` | On success: `madi_results.calib_* (job_id=…)` |
 
 ### GET /jobs — List Jobs
 
 ```bash
-curl -H "X-API-Key: dev-key-immunoplex" "http://localhost:8000/jobs?study=MY_STUDY&status=running"
+curl -H "X-API-Key: $API_KEY" "http://localhost:8000/jobs?study=INCEN_IN_QIV1&status=running"
 ```
 
 ### DELETE /jobs/{job_id} — Cancel a Job
 
 ```bash
-curl -X DELETE -H "X-API-Key: dev-key-immunoplex" http://localhost:8000/jobs/{job_id}
+curl -X DELETE -H "X-API-Key: $API_KEY" http://localhost:8000/jobs/{job_id}
 ```
 
 ### GET /health — Health Check (no auth)
@@ -125,81 +149,113 @@ curl http://localhost:8000/health
 ## Project Structure
 
 ```
-immunoplex-batch-calculator/
+i-spi-compute/
   api/
-    app.py              # FastAPI application
-    Dockerfile
+    app.py                 # FastAPI application
+    api.Dockerfile
     requirements.txt
   worker/
-    worker_batch.R      # Bayesian worker (stanassay ensemble fitting)
-    supervisor.py       # Python supervisor (BLPOP + subprocess + progress)
-    entrypoint.sh       # Container entrypoint
-    Dockerfile
+    worker_curveR.R        # curveR worker (bayesian + frequentist)
+    flatten_and_save.R     # result flattener + idempotent DB writer  ┐ sourced as
+    verify_saved.R         # post-save verifier                        ┘ SIBLINGS
+    supervisor.py          # Python supervisor (BLPOP + subprocess + progress)
+    entrypoint.sh          # verifies curveR + CmdStan, then launches supervisor
+    worker.Dockerfile
     requirements.txt
-    stanassay_*.tar.gz  # stanassay R package (compiled at build time)
-  docker-compose.yml    # Local dev stack
-  .env.example          # Environment variable reference
+  db/
+    calib_schema_v1.sql    # one-time migration: creates the calib_* tables
+  docker-compose.yml       # local dev stack
+  i-spi-compute.k8s.yaml   # Kubernetes manifests (namespace madi-preprod)
+  DEPLOYMENT.md            # full deployment & configuration reference
+  SECRETS.md               # how to create/wire API_KEY, DB_PASSWORD, REDIS_AUTH
+  .env.example             # environment variable template
 ```
+
+> **Sibling-file rule:** `worker_curveR.R` `source()`s `flatten_and_save.R` and
+> `verify_saved.R` from its own directory at startup and aborts if they're
+> missing. All three must stay together in `worker/` (and are copied together into
+> the image).
 
 ## Adding a New Calculation Script
 
-The worker dispatches jobs to scripts based on `script_type`, using a registry in `supervisor.py`:
+The supervisor dispatches on `script_type` via a registry in `supervisor.py`,
+mapping each type to `(interpreter, script_path, method_flag)`:
 
 ```python
 SCRIPT_REGISTRY = {
-    "bayesian":    ("Rscript", SCRIPTS_DIR / "worker_batch.R"),
-    # "frequentist": ("Rscript", SCRIPTS_DIR / "worker_freq.R"),
+    "bayesian":    ("Rscript", SCRIPTS_DIR / "worker_curveR.R", "bayesian"),
+    "frequentist": ("Rscript", SCRIPTS_DIR / "worker_curveR.R", "frequentist"),
+    # "qc_report": ("python3", SCRIPTS_DIR / "worker_qc.py", None),   # example
 }
 ```
 
-To add a new script:
-
-1. **Write the script** — accept `--study`, `--experiment`, `--job_id`, `--progress_dir` CLI args. Write progress to `{progress_dir}/progress_{job_id}.json` with `total_combos` and `completed_combos`. Exit 0 on success.
-
-2. **Register** — add one line to `SCRIPT_REGISTRY` in `supervisor.py`
-
-3. **Dockerfile** — add `COPY worker_new.R .` and any R package installs
-
-4. **Submit** — `{"script_type": "frequentist", "params": {"method": "nplr"}}`
+`method_flag` is passed to the worker as `--method`; use `None` for a script that
+doesn't take one. To add a script: write it (accept `--study`, `--job_id`,
+`--progress_dir`, …; write `{progress_dir}/progress_{job_id}.json` with
+`total_combos`/`completed_combos`; exit 0 on success), add one line to
+`SCRIPT_REGISTRY`, `COPY` it in the worker Dockerfile, and submit with that
+`script_type`.
 
 ## Docker Operations
 
 ```bash
-docker compose up --build            # Start everything
-docker compose build worker          # Rebuild worker only
-docker compose build --no-cache worker  # Force clean rebuild
-docker compose logs -f worker        # Watch worker logs
-docker compose down                  # Stop (clears Redis)
+docker compose up --build                              # start everything
+docker compose build i-spi-compute-worker              # rebuild worker only
+docker compose build --no-cache i-spi-compute-worker   # force clean rebuild
+docker compose logs -f i-spi-compute-worker            # watch worker logs
+docker compose down                                    # stop (clears Redis)
 ```
 
-### Updating stanassay
+### Updating curveR
+
+curveR is installed from GitHub at image-build time (not vendored). To pick up a
+new curveR release, rebuild the worker so the install layer re-runs:
 
 ```bash
-cd ../stanassay
-R CMD build . --no-manual --no-vignettes
-cp stanassay_*.tar.gz ../immunoplex-batch-calculator/worker/
-cd ../immunoplex-batch-calculator
-docker compose build worker
+docker compose build --no-cache i-spi-compute-worker
+docker compose up -d
 ```
+
+Pin curveR to a release/commit in `worker.Dockerfile` for reproducible builds.
 
 ## Deployment
 
-See the [deployment repo](https://github.com/immunoplex/deployment) for Kubernetes manifests and installation instructions.
+Deploys to Kubernetes (namespace `madi-preprod`) as a **parallel** stack that
+does not collide with the existing production batch calculator.
+
+- **`i-spi-compute.k8s.yaml`** — Deployments + Services for redis/api, Deployment
+  for worker, tailored to the cluster (own `i-spi-compute` secret, reused
+  `madi-lumi-reader/db_pwd_x`, `/compute-api` route, amd64 nodeSelector,
+  `WORKER_CORES` ↔ CPU-limit coupling).
+- **`DEPLOYMENT.md`** — the full deployment & configuration reference (env-var
+  tables, runbook, manifest templates).
+- **`SECRETS.md`** — generating and wiring `API_KEY`, `DB_PASSWORD`, `REDIS_AUTH`
+  for both Compose and Kubernetes.
+
+Deploy sequence: create the `i-spi-compute` secret → confirm CI pushed
+`ghcr.io/immunoplex/i-spi-compute-{api,worker}:main` → `kubectl apply -f
+i-spi-compute.k8s.yaml` → add the Traefik `/compute-api` route → submit a test
+job. See `DEPLOYMENT.md` §12.
 
 ## Environment Variables
 
 | Variable | Used By | Description |
 |----------|---------|-------------|
-| `REDIS_HOST` | api, worker | Redis hostname |
+| `API_KEY` | api | API authentication key (clients send it as `X-API-Key`) |
+| `ROOT_PATH` | api | Reverse-proxy path prefix (e.g. `/compute-api`) |
+| `REDIS_HOST` | api, worker | Redis hostname (`i-spi-compute-redis` in this stack) |
 | `REDIS_PORT` | api, worker | Redis port |
-| `REDIS_AUTH` | api, worker | Redis password |
+| `REDIS_AUTH` | api, worker | Redis password (must match Redis `--requirepass`) |
 | `REDIS_DB` | api, worker | Redis database number |
-| `API_KEY` | api | API authentication key |
-| `ROOT_PATH` | api | Reverse proxy path prefix (e.g. `/batch-api`) |
 | `DB_NAME` | worker | PostgreSQL database name |
 | `DB_HOST` | worker | PostgreSQL host |
 | `DB_PORT` | worker | PostgreSQL port |
 | `DB_USER` | worker | PostgreSQL user |
-| `DB_PASSWORD` | worker | PostgreSQL password |
-| `DB_SSLMODE` | worker | PostgreSQL SSL mode |
-| `PROGRESS_DIR` | worker | Progress file directory (default: `/tmp`) |
+| `DB_PASSWORD` | worker | PostgreSQL password (secret) |
+| `DB_SSLMODE` | worker | PostgreSQL SSL mode (`require` in production) |
+| `WORKER_CORES` | worker | CPU cap; set == container CPU limit. Also caps Stan `parallel_chains` |
+| `PROGRESS_DIR` | worker | Progress-file directory (default `/tmp`) |
+| `CMDSTAN` | worker | CmdStan path (set in the image to `/opt/cmdstan/current`) |
+
+Full details, including the secret topology and the `WORKER_CORES` rationale, are
+in `DEPLOYMENT.md`.
