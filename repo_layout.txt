@@ -1,0 +1,104 @@
+# REPOSITORY LAYOUT
+# root:      C:\Users\d78039e\Documents\R-git\i-spi-compute
+# git:       yes  (branch: main, tracked files: 21)
+# generated: 2026-07-22 09:23:42
+# excluded:  .git, .Rproj.user, .Rhistory, node_modules, __pycache__, .venv, venv, site_libs, .quarto, .cache, .idea, .pytest_cache, .mypy_cache, renv (+ *_cache, *_files dirs)
+
+== TREE ==
+i-spi-compute/
+  .env                             [ 503.0 B,    11 lines]
+  .env.example                     [ 361.0 B,    19 lines]
+  .gitignore                       [ 241.0 B,    27 lines]
+  api/
+    api.Dockerfile                   [ 393.0 B,    15 lines]
+    app.py                           [  16.8 KB,   463 lines]
+    requirements.txt                 [  77.0 B,     4 lines]
+  DEPLOYMENT.md                    [  24.5 KB,   513 lines]
+  docker-compose.yml               [   2.4 KB,    76 lines]
+  env.example                      [ 636.0 B,    14 lines]
+  i-spi-compute.k8s.yaml           [   7.6 KB,   170 lines]
+  i-spi-compute.Rproj              [ 274.0 B,    16 lines]
+  LICENSE                          [  34.4 KB,   661 lines]
+  README.md                        [   7.0 KB,   205 lines]
+  repo_layout.R                    [   8.5 KB,   173 lines]
+  SECRETS.md                       [   6.7 KB,   186 lines]
+  worker/
+    entrypoint.sh                    [   2.7 KB,    58 lines]
+    flatten_and_save.R               [  22.0 KB,   444 lines]
+    migrations/
+      002_pareto_asymmetry.sql         [   3.9 KB,    72 lines]
+      bayes_keying_migration.sql       [   3.4 KB,    61 lines]
+    requirements.txt                 [  14.0 B,     1 lines]
+    scratch/
+      calib_schema_v1.sql              [  11.5 KB,   227 lines]
+      Dockerfile                       [   3.7 KB,    79 lines]
+      parity_check.R                   [   9.1 KB,   167 lines]
+      run_worker_local.R               [  10.4 KB,   215 lines]
+      smoke_test.R                     [  14.4 KB,   277 lines]
+      worker_batch.R                   [  91.6 KB,  1572 lines]
+      worker_batch_old.R               [  89.3 KB,  1530 lines]
+    supervisor.py                    [  16.9 KB,   453 lines]
+    verify_saved.R                   [  12.6 KB,   280 lines]
+    worker.Dockerfile                [   5.3 KB,    92 lines]
+    worker_curveR.R                  [  19.5 KB,   379 lines]
+
+== FLAT LIST  ([T]=git-tracked, [U]=untracked, [ ]=no git) ==
+[U] .env
+[T] .env.example
+[T] .gitignore
+[T] api/api.Dockerfile
+[T] api/app.py
+[T] api/requirements.txt
+[T] DEPLOYMENT.md
+[T] docker-compose.yml
+[T] env.example
+[T] i-spi-compute.k8s.yaml
+[T] i-spi-compute.Rproj
+[T] LICENSE
+[T] README.md
+[T] repo_layout.R
+[T] SECRETS.md
+[T] worker/entrypoint.sh
+[T] worker/flatten_and_save.R
+[U] worker/migrations/002_pareto_asymmetry.sql
+[U] worker/migrations/bayes_keying_migration.sql
+[T] worker/requirements.txt
+[U] worker/scratch/calib_schema_v1.sql
+[U] worker/scratch/Dockerfile
+[U] worker/scratch/parity_check.R
+[U] worker/scratch/run_worker_local.R
+[U] worker/scratch/smoke_test.R
+[U] worker/scratch/worker_batch.R
+[U] worker/scratch/worker_batch_old.R
+[T] worker/supervisor.py
+[T] worker/verify_saved.R
+[T] worker/worker.Dockerfile
+[T] worker/worker_curveR.R
+
+== PRUNE CANDIDATES — likely generated/cruft (review before deleting) ==
+(none)
+
+== SUPERSEDED — believed replaced in this project ==
+worker/scratch/worker_batch.R
+
+== POSSIBLE SECRETS — must NOT be committed; verify .gitignore ==
+.env
+SECRETS.md
+
+== UNTRACKED (present on disk, not in git) ==
+.env
+worker/migrations/002_pareto_asymmetry.sql
+worker/migrations/bayes_keying_migration.sql
+worker/scratch/calib_schema_v1.sql
+worker/scratch/Dockerfile
+worker/scratch/parity_check.R
+worker/scratch/run_worker_local.R
+worker/scratch/smoke_test.R
+worker/scratch/worker_batch.R
+worker/scratch/worker_batch_old.R
+
+== GHOSTS (in git, missing on disk) ==
+(none)
+
+== SUMMARY ==
+files shown: 31   dirs: 4   total size:  426.6 KB
