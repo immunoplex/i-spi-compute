@@ -8,7 +8,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/immunoplex-batch-cal-worker
+  IMAGE_NAME: ${{ github.repository_owner }}/i-spi-compute-worker
 
 jobs:
   build-and-push:
@@ -51,6 +51,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: ./worker
+          file: ./worker/worker.Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
