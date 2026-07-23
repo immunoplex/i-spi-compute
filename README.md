@@ -225,24 +225,36 @@ does not collide with the existing production batch calculator.
 
 - **`i-spi-compute.k8s.yaml`** — Deployments + Services for redis/api, Deployment
   for worker, tailored to the cluster (own `i-spi-compute` secret, reused
-  `madi-lumi-reader/db_pwd_x`, `/compute-api` route, amd64 nodeSelector,
+  `madi-lumi-reader/db_pwd_x`, `/i-spi-compute` route, amd64 nodeSelector,
   `WORKER_CORES` ↔ CPU-limit coupling).
 - **`DEPLOYMENT.md`** — the full deployment & configuration reference (env-var
   tables, runbook, manifest templates).
-- **`SECRETS.md`** — generating and wiring `API_KEY`, `DB_PASSWORD`, `REDIS_AUTH`
-  for both Compose and Kubernetes.
+- **`SECRETS.md`** — generating and wiring `API_KEY`, `DB_PASSWORD`, `REDIS_AUTH`;
+  Docker Compose `.env` and the cluster **Sealed Secrets** (`kubeseal`) workflow.
 
-Deploy sequence: create the `i-spi-compute` secret → confirm CI pushed
-`ghcr.io/immunoplex/i-spi-compute-{api,worker}:main` → `kubectl apply -f
-i-spi-compute.k8s.yaml` → add the Traefik `/compute-api` route → submit a test
-job. See `DEPLOYMENT.md` §12.
+Deploy sequence:
+
+1. **Seal the secret.** Create the `i-spi-compute` Secret (`API_KEY` +
+   `REDIS_AUTH`) and encrypt it with `kubeseal` into a `SealedSecret` — the
+   plaintext is never committed. See `SECRETS.md` (Sealed Secrets workflow).
+2. **Images.** Confirm CI pushed
+   `ghcr.io/immunoplex/i-spi-compute-{api,worker}:main` (Actions tab).
+3. **Apply the manifest** (committed to `dartmouth/k8s-madi/.../preprod-rcikube6`):
+   `kubectl apply -f i-spi-compute.k8s.yaml`.
+4. **Traefik ingress.** Add the `i-spi-compute` Ingress + `i-spi-compute-stripprefix`
+   middleware so the API is reachable at `https://<host>/i-spi-compute/…`; reload
+   Traefik. See `DEPLOYMENT.md` §14.
+5. **Smoke test** a `frequentist` then a `bayesian` job (via the ingress URL, or
+   `kubectl port-forward svc/i-spi-compute-api 8000:8000` before the route is live).
+
+Full detail: `DEPLOYMENT.md` §12 (runbook), §14 (ingress); `SECRETS.md` (secrets).
 
 ## Environment Variables
 
 | Variable | Used By | Description |
 |----------|---------|-------------|
 | `API_KEY` | api | API authentication key (clients send it as `X-API-Key`) |
-| `ROOT_PATH` | api | Reverse-proxy path prefix (e.g. `/compute-api`) |
+| `ROOT_PATH` | api | Reverse-proxy path prefix (matches Traefik ingress, `/i-spi-compute`) |
 | `REDIS_HOST` | api, worker | Redis hostname (`i-spi-compute-redis` in this stack) |
 | `REDIS_PORT` | api, worker | Redis port |
 | `REDIS_AUTH` | api, worker | Redis password (must match Redis `--requirepass`) |

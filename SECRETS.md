@@ -131,90 +131,105 @@ docker compose up -d
 
 ---
 
-## Kubernetes path (production — namespace `madi-preprod`)
 
-This stack deploys **alongside** the existing production batch calculator, so it
-gets its **own** secret (`i-spi-compute`) for the values that must be independent,
-and **reuses** the existing DB credential (same database user).
+## Kubernetes path (production — namespace `madi-preprod`, Sealed Secrets)
 
-### Where do I run these commands? (important)
+This cluster does **not** use plain `kubectl create secret`. Secret manifests are
+committed to git, so the secret values must be **encrypted at rest** with
+[Sealed Secrets](https://github.com/bitnami-labs/sealed-secrets): you produce a
+`SealedSecret` (safe to commit) with `kubeseal`, and the in-cluster
+sealed-secrets controller decrypts it into a real `Secret` at apply time. You
+never commit the plaintext `Secret`.
 
-A Kubernetes Secret is a **control-plane object** — it lives in the namespace
-(etcd), not inside any application container. You create it by running `kubectl`
-against the cluster API, from **any shell that has kubectl access to the
-cluster**. You do **not** `exec` into a pod to make it. Two ways to get such a
-shell:
+This stack gets its **own** secret named `i-spi-compute` (`API_KEY` +
+`REDIS_AUTH`). The DB password is **not** included — the worker reuses the
+existing `madi-lumi-reader/db_pwd_x` (same DB user `d78039e`).
 
-- **Rancher's built-in kubectl shell (easiest).** In the Rancher UI, open the
-  cluster, then use the terminal/**Kubectl Shell** button (top-right of the
-  cluster view). It opens a browser terminal already authenticated to the cluster
-  — run the `kubectl` commands below there directly.
-- **Local kubectl.** In Rancher, "Download KubeConfig" for the cluster, save it to
-  `~/.kube/config` (or `export KUBECONFIG=/path/to/that.yaml`), then run `kubectl`
-  from your own terminal (Git Bash). Requires `kubectl` installed locally.
+### One-time: a shell with the tools
 
-Either way the commands are identical; they act on the cluster, not on a
-container. Confirm access first:
+`kubeseal` (and `kubectl`) are needed. A throwaway Debian container works well:
 
 ```bash
-kubectl -n madi-preprod get pods        # should list the running prod pods
+docker run -it --rm debian bash
+apt update && apt install -y kubectl wget
+
+# kubeseal CLI (match the controller version installed in the cluster)
+export KUBESEAL_VERSION="0.23.0"
+wget -O kubeseal-${KUBESEAL_VERSION}-linux-amd64.tar.gz \
+  "https://github.com/bitnami-labs/sealed-secrets/releases/download/v${KUBESEAL_VERSION}/kubeseal-${KUBESEAL_VERSION}-linux-amd64.tar.gz"
+tar -xvzf kubeseal-${KUBESEAL_VERSION}-linux-amd64.tar.gz kubeseal
 ```
 
-> The Rancher shell may not have `openssl`. If `openssl rand -hex 32` errors
-> there, generate the two values in your **local** Git Bash (which does have
-> openssl) and paste the literal strings into the `--from-literal=` flags below.
+Save the cluster's sealed-secrets **public certificate** to `kubeseal.pem` (this
+is the controller's public key — safe to share; it can only *encrypt*). Use the
+`kubeseal.pem` for this cluster (the MADI preprod cert is kept with the ops
+notes / k8s-madi repo):
 
-1. **Create the new secret** with fresh `API_KEY` and `REDIS_AUTH` only:
-   ```bash
-   kubectl -n madi-preprod create secret generic i-spi-compute \
-     --from-literal=API_KEY="$(openssl rand -hex 32)" \
-     --from-literal=REDIS_AUTH="$(openssl rand -hex 32)"
-   ```
-   (No openssl in the shell? Generate locally and paste literals:
-   `--from-literal=API_KEY="<64-hex>" --from-literal=REDIS_AUTH="<64-hex>"`.)
+```bash
+cat > kubeseal.pem << 'EOF'
+-----BEGIN CERTIFICATE-----
+... (MADI preprod sealed-secrets public cert) ...
+-----END CERTIFICATE-----
+EOF
+```
 
-   Then confirm it exists with the right keys (this shows key names + sizes, not
-   the secret values):
-   ```bash
-   kubectl -n madi-preprod describe secret i-spi-compute
-   # Data: API_KEY: 64 bytes, REDIS_AUTH: 64 bytes
-   ```
-   To replace a value later: `kubectl -n madi-preprod delete secret i-spi-compute`
-   then re-create, or `kubectl -n madi-preprod create secret generic i-spi-compute
-   --from-literal=... --dry-run=client -o yaml | kubectl apply -f -`.
+### Step 1 — Build the plaintext Secret manifest (not committed)
 
-   Do **not** put the DB password here — the worker references the existing
-   secret `madi-lumi-reader` key `db_pwd_x` (the same DB user, `d78039e`, that
-   i-spi and the production worker already use). Verify that one is present too:
-   ```bash
-   kubectl -n madi-preprod get secret madi-lumi-reader -o jsonpath='{.data.db_pwd_x}' | head -c 5; echo " …(exists)"
-   ```
+```bash
+export SECRET_NAME=i-spi-compute
+kubectl create secret generic $SECRET_NAME \
+  --from-literal=API_KEY="$(openssl rand -hex 32)" \
+  --from-literal=REDIS_AUTH="$(openssl rand -hex 32)" \
+  --dry-run=client \
+  -o yaml > secret.yml
+```
 
-2. **Reference them** in each Deployment via `secretKeyRef` (never plain
-   `value:`). These match `i-spi-compute.k8s.yaml`:
-   ```yaml
-   # i-spi-compute-api
-   env:
-     - { name: API_KEY,    valueFrom: { secretKeyRef: { name: i-spi-compute, key: API_KEY } } }
-     - { name: REDIS_AUTH, valueFrom: { secretKeyRef: { name: i-spi-compute, key: REDIS_AUTH } } }
-   ```
-   ```yaml
-   # i-spi-compute-worker
-   env:
-     - { name: REDIS_AUTH,  valueFrom: { secretKeyRef: { name: i-spi-compute,     key: REDIS_AUTH } } }
-     - { name: DB_PASSWORD, valueFrom: { secretKeyRef: { name: madi-lumi-reader,  key: db_pwd_x   } } }
-   ```
+`--dry-run=client -o yaml` means kubectl only *renders* the manifest locally —
+it does **not** touch the cluster. `secret.yml` holds plaintext; do not commit it.
 
-3. **Enable auth on `i-spi-compute-redis`** with the same `REDIS_AUTH` value —
-   the Redis Deployment runs `redis-server --requirepass $(REDIS_AUTH)` with
-   `REDIS_AUTH` from the `i-spi-compute` secret. As with Compose, the value must
-   match in Redis, API, and worker (all three read it from the one secret).
+### Step 2 — Seal it
 
-4. Verify as in Step 4 (via the API's Service, e.g. `kubectl port-forward
-   svc/i-spi-compute-api 8000:8000`, or through the `/compute-api` Traefik route
-   once added).
+```bash
+./kubeseal --scope cluster-wide --format=yaml --cert=kubeseal.pem < secret.yml > sealed-i-spi-compute.yaml
+```
 
----
+The output `sealed-i-spi-compute.yaml` is a `SealedSecret` — encrypted, **safe to
+commit**. `--scope cluster-wide` lets the sealed secret be applied in the target
+namespace without being pinned to a specific name+namespace hash (matches how
+the other MADI secrets are sealed).
+
+### Step 3 — Commit + apply
+
+Commit the `SealedSecret` to the cluster config repo alongside the manifest
+(`dartmouth/k8s-madi/.../preprod-rcikube6`). When applied, the controller
+decrypts it into a real `Secret` named `i-spi-compute` in `madi-preprod`. Confirm:
+
+```bash
+kubectl -n madi-preprod get sealedsecret i-spi-compute
+kubectl -n madi-preprod get secret       i-spi-compute        # created by the controller
+kubectl -n madi-preprod describe secret   i-spi-compute        # keys API_KEY, REDIS_AUTH (sizes only)
+```
+
+The manifest references these keys exactly as before — `secretKeyRef` to
+`i-spi-compute` for `API_KEY`/`REDIS_AUTH`, and to the existing
+`madi-lumi-reader`/`db_pwd_x` for `DB_PASSWORD`:
+
+```yaml
+# i-spi-compute-api
+- { name: API_KEY,    valueFrom: { secretKeyRef: { name: i-spi-compute, key: API_KEY } } }
+- { name: REDIS_AUTH, valueFrom: { secretKeyRef: { name: i-spi-compute, key: REDIS_AUTH } } }
+# i-spi-compute-worker
+- { name: REDIS_AUTH,  valueFrom: { secretKeyRef: { name: i-spi-compute,    key: REDIS_AUTH } } }
+- { name: DB_PASSWORD, valueFrom: { secretKeyRef: { name: madi-lumi-reader, key: db_pwd_x   } } }
+```
+
+### Rotating a value
+
+Re-run Steps 1–3 with a new value and re-apply the `SealedSecret`; the controller
+updates the `Secret`. Then restart the consumers so they pick it up:
+`kubectl -n madi-preprod rollout restart deploy/i-spi-compute-api deploy/i-spi-compute-worker`
+(and, for `REDIS_AUTH`, the redis deployment too — all three share the value).
+
 
 ## Rules of thumb
 

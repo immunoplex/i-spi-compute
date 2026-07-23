@@ -12,6 +12,7 @@ venv/
 *.RData
 worker/migrations/
 worker/scratch/
+
 # Docker
 .env
 
@@ -25,3 +26,8 @@ plots/
 .vscode/
 *.swp
 .DS_Store
+
+# local-only dev material (certs, plaintext secret manifests)
+dev/
+secret.yml
+*.pem

@@ -23,12 +23,30 @@
 #      The DB password is NOT duplicated here — the worker references the
 #      existing secret madi-lumi-reader/db_pwd_x (same DB user d78039e).
 #   2. Apply calib_schema_v1.sql to the database once (out of band).
-#   3. Add a Traefik route for /compute-api -> Service i-spi-compute-api:8000
+#   3. Add a Traefik route for /i-spi-compute -> Service i-spi-compute-api:8000
 #      (mirrors the prod /batch-api route; kept separate so both run in parallel).
 #
 # Images are built by CI to ghcr.io/immunoplex/i-spi-compute-{api,worker}:main.
 # =============================================================================
-
+---
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  annotations:
+    sealedsecrets.bitnami.com/cluster-wide: "true"
+  creationTimestamp: null
+  name: i-spi-compute
+spec:
+  encryptedData:
+    API_KEY: AgBiXc8JMSU9lQwPiAL53Eg8fNAvIVfjcoWXY3fQ76xnCqTtVkQ6jeFZyW7Jk9THyBVKaNx+4pVX8aWauLTHDfpUFB91TPyC6HKeqQyh2/Q4m1Hb6b+qDM3ECNNVHEO7zb8mAsaWMLobYlJf8MJUH3jJew7NFk48kmNE4JU1Vj72wxaHapiUNZCYEhnFFUucnnQJ/P1XKJ+J3xIwgtZfWQB6MeqHQWOQL9D2M7x7jVtDc+Wu1Cjs6UZu1BPdpIwE1b9bUpK0MX7yW2w+PwGqj0aaji3inmiEoVt/hL5crfe1kD1yfZQ0s8FDRp1PReu9LkpROWqfhQ2rlN0vqUEJPi0JywnebJiOyoSsPA55p6u76exqcsnuRoSU5mbuLwbNc7x77MYxtIu6EDLnZANhKmyCKEOADTIGTpwDXUH6uPWkfL5fBhHBhcqWu4l07czLBIuNXe2MuXU2VZlDhHsfenMfWfS/nz/4azYpAaCTq6YQFHfIb76npPzpK22nEIl/y9uHGyl57E1dKLRHnAv6rdAkSK4/cWNMQ2vF5m7YIAExy0EbGpNNtmYesHwvrhvc+Ri4S+j7u4C8IQymUhJd3vguS72my9ca4QXMMg8JJUbj3h5lA0Rk/6Tx+Fl1pRC0NMKMzfcOBeQl8OhUhqIyZc4EGNQ4DXgfhLaliDoxMX1T58dapt09C4XsThzJHRO0rRtWDuIPrpgcvZp/xAm8FHQhl+aU0zMdajdrx2bRk4MtUU2kn8zTpWFeI90/DJ69loZj03MZDa/qaH90NioMJYC7
+    REDIS_AUTH: AgAkpKiGt47QBxltylvTZrTq5DATBwis3HcGCLZ81hv/iMLTqx5+7LX8zfViz6B3w/PKqt/SBrLgP1rsrD7jhNlObj/XX10MZo2mEACZXyVOP+P8eXPldyNexAsv1rmEkwqk7429K1uZHLDRnzINLvKRpN5lWZDwV5oxMHPBmZxPMq0YUHpV6nRrJEqQLlRfV8711CVgZE/Se2dfn0HCIN5+i0hZc5cWEQ1UsNRBzixC80O61oJXbLP29+Flzh7A+puftuYMi45bHH9J0CslgtwElkxiaE6eLMcIm8P1jurD0tIVKdXUeNIzjCbpUcu3tnTQoRX1CIF/ft7Rbq5WmHyawHkjmpA0D9LXEFA5Sl7pXZrC7lJel7/O8BJbvO4a/r7pz/Ok+NEon4Ox0NJ/rBL7pHSHfj/tsorNkifn9nl7JRx6q+O9MQE2b4poV+tAUBARxQ7yNc3T/CWjq+49JcUDCSqd1btiVzMMM4eN650X4/t0jqJKoUi5yuIdDrZAWJxGEFBQhRbQ+0K2vR0HsRrh7abE97WENxcE3rf5eV6blodYjhxihFU0RsrTmoFhswONw7qPXxmvx3vilVQahSsqALrZWqIO4tZHCZqXPgSj+cMijxe9CkBQpIGh/XtpjLlfSCEO9RAW9xPaOql1uYkwihKY5zl8u6ctrBr2sy+WKaVYXH7wgSG00XZY+kJR/jBFUQBuU2ekaYSPoBqIxBGoPnSPoCvCW2OhfFZvgjhEeO15lgKyu3YoKU47aeUd2FozVGEXLY6Mk8nhNFv4ySYt
+  template:
+    metadata:
+      annotations:
+        sealedsecrets.bitnami.com/cluster-wide: "true"
+      creationTimestamp: null
+      name: i-spi-compute
+---
 # ─────────────────────────────────────────────────────────────────────────────
 # Redis (dedicated queue for this stack)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -102,7 +120,7 @@ spec:
               valueFrom: { secretKeyRef: { name: i-spi-compute, key: REDIS_AUTH } }
             - name: API_KEY
               valueFrom: { secretKeyRef: { name: i-spi-compute, key: API_KEY } }
-            - { name: ROOT_PATH,  value: /compute-api }          # <-- distinct from prod /batch-api
+            - { name: ROOT_PATH,  value: /i-spi-compute }          # <-- must match the Traefik ingress prefix (/i-spi-compute)
           ports:
             - { containerPort: 8000, name: http, protocol: TCP }
           readinessProbe:
@@ -168,3 +186,23 @@ spec:
           resources:
             requests: { cpu: "1",  memory: 2Gi }
             limits:   { cpu: "4",  memory: 4Gi }   # tune to study size; keep == WORKER_CORES
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: i-spi-compute
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: i-spi-compute-stripprefix@file
+spec:
+  rules:
+  - http:
+      paths:
+      - pathType: Prefix
+        path: "/i-spi-compute"
+        backend:
+          service:
+            name: i-spi-compute-api
+            port:
+              number: 8000
+---

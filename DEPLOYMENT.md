@@ -360,9 +360,12 @@ study's per-family draw matrices. Frequentist fits are lightweight. Start with
 
 ## 11. Secrets & configuration management
 
-> **How-to:** for step-by-step instructions to generate and wire these secrets
-> (Docker Compose and Kubernetes), see **[`SECRETS.md`](./SECRETS.md)**. A
-> committable template of the required variables lives in `.env.example`.
+> **How-to:** for step-by-step instructions to generate and wire these secrets,
+> see **[`SECRETS.md`](./SECRETS.md)**. In the cluster this uses **Sealed
+> Secrets** (`kubeseal`): the plaintext `Secret` is never committed; an encrypted
+> `SealedSecret` is committed to `k8s-madi` and the in-cluster controller
+> decrypts it into the real `i-spi-compute` Secret. `.env.example` covers the
+> Docker Compose case.
 
 Provide as secrets (never in the image or committed config): `API_KEY`,
 `DB_PASSWORD`, `REDIS_AUTH` (if used). Everything else in §6 is plain config.
@@ -474,7 +477,7 @@ for `i-spi-compute-worker`. The load-bearing details encoded there:
 - **CPU cap:** `WORKER_CORES` set equal to the worker's CPU limit.
 - **Arch pin:** worker `nodeSelector: kubernetes.io/arch: amd64` (Stan models are
   precompiled for amd64).
-- **Route:** `ROOT_PATH=/compute-api`, distinct from the prod `/batch-api`, so a
+- **Route:** `ROOT_PATH=/i-spi-compute`, distinct from the prod `/batch-api`, so a
   Traefik route can expose the new API in parallel until i-spi cuts over.
 
 Create the secret first (see `SECRETS.md`), then `kubectl apply -f
@@ -482,7 +485,74 @@ i-spi-compute.k8s.yaml`.
 
 ---
 
-## 14. Version & compatibility notes
+## 14. Ingress / external access (Traefik)
+
+The Kubernetes Service `i-spi-compute-api` is reachable **inside** the cluster,
+but external clients (and i-spi) reach it only through Traefik. Traefik does not
+auto-discover the Service — it needs an `Ingress` plus a **strip-prefix
+middleware** so the path prefix used externally is removed before the request
+hits the API. This mirrors how the production `/batch-api` route works, on a
+distinct path so the two run in parallel.
+
+**Path:** external `https://<host>/i-spi-compute/...` → strip `/i-spi-compute`
+→ `i-spi-compute-api:8000`. The API's `ROOT_PATH` is set to `/i-spi-compute` in
+the manifest to match this external prefix, so Swagger and redirect URLs resolve
+correctly behind the strip-prefix middleware.
+
+Three pieces, all in the `dartmouth/k8s-madi` config repo:
+
+**1. Ingress** — appended to `i-spi-compute.k8s.yaml`:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: i-spi-compute
+  namespace: madi-preprod
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: i-spi-compute-stripprefix@file
+spec:
+  rules:
+    - http:
+        paths:
+          - pathType: Prefix
+            path: /i-spi-compute
+            backend:
+              service:
+                name: i-spi-compute-api
+                port:
+                  number: 8000
+```
+
+**2. Strip-prefix middleware** — added to the cluster's static Traefik config
+(`k8s-madi/.../preprod-rcikube6/traefik.yml`). The `@file` provider suffix in the
+annotation above points at a middleware defined in that file:
+
+```yaml
+i-spi-compute-stripprefix:
+  stripPrefix:
+    prefixes:
+      - /i-spi-compute
+    forceSlash: false
+```
+
+**3. Apply + reload.** Commit `i-spi-compute.k8s.yaml` (with the Ingress) and the
+`traefik.yml` change to `k8s-madi/.../preprod-rcikube6`. Because the middleware
+lives in Traefik's **static** file config, Traefik must reload to pick it up — in
+Rancher, delete and recreate the Traefik pod. The dynamic `Ingress` is picked up
+automatically once applied.
+
+**Verify:**
+
+```bash
+kubectl -n madi-preprod get ingress i-spi-compute
+curl https://<host>/i-spi-compute/health          # {"status":"ok","redis":"connected"}
+```
+
+Until the Ingress + middleware are live, test with a port-forward instead:
+`kubectl -n madi-preprod port-forward svc/i-spi-compute-api 8000:8000`.
+
+## 15. Version & compatibility notes
 
 - **Base image:** `rocker/tidyverse:latest` (Debian + R). Pin to a dated tag for
   reproducibility in production.
@@ -496,7 +566,7 @@ i-spi-compute.k8s.yaml`.
 
 ---
 
-## 15. Known assumptions & open items
+## 16. Known assumptions & open items
 
 - `entrypoint.sh` verifies the curveR stack + CmdStan and `exec`s
   `supervisor.py`. It replaces the old stanassay entrypoint (which hard-failed on
