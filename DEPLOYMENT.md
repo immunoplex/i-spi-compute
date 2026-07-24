@@ -1,4 +1,4 @@
-# I-SPI-COMPUTE — Deployment & Configuration Reference
+# Immunoplex Batch Calculator — Deployment & Configuration Reference
 
 > **Purpose of this document.** It is the single source of truth for how the
 > Batch Calculator is built, configured, and deployed. It is written to be
@@ -14,7 +14,7 @@
 
 ## 1. System overview
 
-The i-spi-compute fits immunoassay standard curves (Bayesian **and**
+The Batch Calculator fits immunoassay standard curves (Bayesian **and**
 frequentist) and back-calculates sample concentrations, writing results to
 PostgreSQL. It is a queue-worker system with four runtime components plus an
 external database.
@@ -278,26 +278,64 @@ but it caches; rebuilds that only change scripts are fast.
 `calib_schema_v1.sql`. It is **non-destructive** — it creates only the new
 `calib_*` tables and touches nothing in the legacy `bayes_*` tables.
 
+**Also required before first run:** the `*_unmasked` input views (see below),
+since the worker reads them rather than the base tables. These are **already
+deployed** on `mlr-c3d7-db` (verified 2026-07-24) along with `masked`/
+`mask_reason` columns on the base `xmap_*` and `curve_lookup` tables.
+
 **Result tables written by the worker** (`method` column distinguishes
 `bayesian`/`frequentist`; writes are idempotent — delete-by-`(curve_id, method)`
 then insert):
 `calib_run`, `calib_fit`, `calib_param`, `calib_gate`, `calib_grid`,
 `calib_samples`, `calib_diagnostics`, `calib_loo` (bayesian only).
 
-**`curve_lookup` (read-only contract):** the worker **never writes**
-`curve_lookup`. It resolves `curve_id` by joining on the natural key. Standards
-match on the full 10-column NK; **samples match on the NK minus `source`**
-(patient wells carry no standard source) — this is load-bearing and must not be
-"simplified" back to the full key. If a curve does not resolve, the worker errors
-rather than inventing a row.
+**Input data — read through `*_unmasked` views (masking):** the worker does not
+read the base `xmap_*` / `curve_lookup` tables directly. It reads a set of
+**masked-aware views** that exclude points and plates flagged as bad in the lab
+("masking" — the excluded rows are kept and flagged, not deleted; the views
+filter them out so downstream fitting never sees them):
+
+| View | Backs (base table) | Read by |
+| --- | --- | --- |
+| `madi_results.standard_unmasked` | `xmap_standard` | `fetch_standards`, `discover_combos` |
+| `madi_results.sample_unmasked` | `xmap_sample` | `fetch_samples` |
+| `madi_results.blank_unmasked` | `xmap_buffer` | `fetch_blanks` |
+| `madi_results.header_unmasked` | `xmap_header` | all fetchers (join on plate) |
+| `madi_results.curve_lookup_unmasked` | `curve_lookup` | `curve_id` resolution |
+| `madi_results.control_unmasked` | `xmap_control` | (not read by this worker; exists for completeness) |
+
+Each base table carries `masked boolean` + `mask_reason text`; each view **omits
+those two columns** and returns only `WHERE masked = false`. Verified live: every
+view has row-parity with its base's unmasked rows (e.g. `standard_unmasked` =
+310,034 rows = `xmap_standard WHERE masked=false`).
+
+The masking rule (a point excluded if its own flag is set **or** its plate is
+masked) lives in these view definitions — a single source of truth, so the worker
+needs no masking logic and no rebuild when masking rules change. The worker still
+adds one thing a view can't: a viability check is expected (skip a curve left with
+too few points after masking) — see the worker's per-group guard.
+
+**`curve_lookup` (read-only contract):** the worker **never writes** the curve
+map. It resolves `curve_id` by joining `curve_lookup_unmasked` on the natural key.
+Standards match on the full 10-column NK; **samples match on the NK minus
+`source`** (patient wells carry no standard source) — load-bearing, do not
+"simplify" back to the full key. Unresolved rows keep `curve_id = NA` and are
+surfaced (standards error; samples/blanks are dropped with a logged count) — never
+invented.
+
+**Model set:** when a job supplies no `--models`, the worker defaults to the full
+five-model curveRcore set (`logistic5`, `loglogistic5`, `logistic4`,
+`loglogistic4`, `gompertz4`), matching `antigen_feature_settings.model_form_list`
+so the worker and the settings table agree.
 
 **Legacy `bayes_*`:** written by the old stanassay worker. The curveR worker does
 **not** write them. They can coexist during parallel-run/validation and be
 retired after read-side cutover.
 
 **Database privileges the worker needs:**
-- `SELECT` on `madi_results.curve_lookup`, `xmap_standard`, `xmap_sample`,
-  `xmap_buffer`, `xmap_header`, `xmap_antigen_family` (input data).
+- `SELECT` on the input views `madi_results.{standard,sample,blank,header,curve_lookup}_unmasked`
+  (and on the base tables they wrap, as required by the view).
+- `SELECT` on `madi_results.antigen_feature_settings` (standard-curve concentration + model list).
 - `INSERT`, `DELETE`, `SELECT` on all `madi_results.calib_*` tables.
 
 ---

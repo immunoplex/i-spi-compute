@@ -218,6 +218,20 @@ docker compose up -d
 
 Pin curveR to a release/commit in `worker.Dockerfile` for reproducible builds.
 
+## Data Sources & Masking
+
+The worker reads input from **masked-aware views**, not the base tables:
+`standard_unmasked`, `sample_unmasked`, `blank_unmasked`, `header_unmasked`,
+`curve_lookup_unmasked` (backing `xmap_standard/sample/buffer/header` and
+`curve_lookup`). Each base table carries `masked boolean` + `mask_reason text`;
+the views drop those columns and return only `WHERE masked = false`, so points or
+whole plates flagged bad in the lab are excluded from fitting while the rows are
+**kept and flagged** (not deleted). The masking rule lives entirely in the view
+definitions — the worker needs no masking logic. Results are written to
+`madi_results.calib_*` (a `method` column distinguishes `bayesian`/`frequentist`).
+See `DEPLOYMENT.md` §8 for the full table/view map and the authoritative column
+list (`db_schema.csv`).
+
 ## Deployment
 
 Deploys to Kubernetes (namespace `madi-preprod`) as a **parallel** stack that
