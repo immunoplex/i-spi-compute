@@ -1,4 +1,4 @@
-# Immunoplex Batch Calculator — Deployment & Configuration Reference
+# I-SPI-COMPUTE — Deployment & Configuration Reference
 
 > **Purpose of this document.** It is the single source of truth for how the
 > Batch Calculator is built, configured, and deployed. It is written to be
@@ -14,7 +14,7 @@
 
 ## 1. System overview
 
-The Batch Calculator fits immunoassay standard curves (Bayesian **and**
+The i-spi-compute fits immunoassay standard curves (Bayesian **and**
 frequentist) and back-calculates sample concentrations, writing results to
 PostgreSQL. It is a queue-worker system with four runtime components plus an
 external database.

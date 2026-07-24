@@ -99,8 +99,8 @@ discover_combos <- function(conn, study, project_id, experiment = NULL,
            h.nominal_sample_dilution, s.feature, s.antigen, s.source,
            COALESCE(s.wavelength,'__none__') AS wavelength,
            COUNT(DISTINCT h.plate) AS n_plate
-    FROM madi_results.xmap_standard s
-    INNER JOIN madi_results.xmap_header h
+    FROM madi_results.standard_unmasked s
+    INNER JOIN madi_results.header_unmasked h
       ON h.study_accession = s.study_accession
      AND h.experiment_accession = s.experiment_accession
      AND TRIM(h.plate_id) = TRIM(s.plate_id)
@@ -122,8 +122,8 @@ fetch_standards <- function(conn, project_id, study, experiment) DBI::dbGetQuery
          h.sample_dilution_factor, s.antibody_mfi AS mfi,
          s.dilution AS dilution, s.feature, s.source,
          COALESCE(s.wavelength,'__none__') AS wavelength, h.project_id
-  FROM madi_results.xmap_standard s
-  INNER JOIN madi_results.xmap_header h
+  FROM madi_results.standard_unmasked s
+  INNER JOIN madi_results.header_unmasked h
     ON h.study_accession = s.study_accession
    AND h.experiment_accession = s.experiment_accession
    AND TRIM(h.plate_id) = TRIM(s.plate_id)
@@ -135,8 +135,8 @@ fetch_samples <- function(conn, project_id, study, experiment) DBI::dbGetQuery(c
          s.sampleid, s.antibody_mfi AS mfi, s.dilution, s.timeperiod,
          s.patientid, s.well, s.feature, s.source,
          COALESCE(s.wavelength,'__none__') AS wavelength, h.project_id
-  FROM madi_results.xmap_sample s
-  INNER JOIN madi_results.xmap_header h
+  FROM madi_results.sample_unmasked s
+  INNER JOIN madi_results.header_unmasked h
     ON h.study_accession = s.study_accession
    AND h.experiment_accession = s.experiment_accession
    AND TRIM(h.plate_id) = TRIM(s.plate_id)
@@ -147,8 +147,8 @@ fetch_blanks <- function(conn, project_id, study, experiment) DBI::dbGetQuery(co
   SELECT b.antigen, b.source, COALESCE(b.wavelength,'__none__') AS wavelength,
          h.plateid, h.plate, h.nominal_sample_dilution,
          b.antibody_mfi AS mfi, h.project_id
-  FROM madi_results.xmap_buffer b
-  INNER JOIN madi_results.xmap_header h
+  FROM madi_results.blank_unmasked b
+  INNER JOIN madi_results.header_unmasked h
     ON h.study_accession = b.study_accession
    AND h.experiment_accession = b.experiment_accession
    AND TRIM(h.plate_id) = TRIM(b.plate_id)
@@ -159,7 +159,7 @@ fetch_blanks <- function(conn, project_id, study, experiment) DBI::dbGetQuery(co
 fetch_sc_conc <- function(conn, study, experiment) {
   res <- tryCatch(DBI::dbGetQuery(conn, "
     SELECT DISTINCT antigen, standard_curve_concentration
-    FROM madi_results.xmap_antigen_family
+    FROM madi_results.antigen_feature_settings
     WHERE study_accession = $1 AND experiment_accession = $2
       AND standard_curve_concentration IS NOT NULL",
     params = list(study, experiment)), error = function(e) data.frame())
@@ -218,7 +218,10 @@ attach_curve_id <- function(df, lookup, study, experiment, group_feature = NULL,
 # ── settings from CLI params ─────────────────────────────────────────────────
 build_models <- function(p) {
   if (nzchar(p$models)) trimws(strsplit(p$models, ",")[[1]])
-  else c("logistic4", "logistic5", "gompertz4")   # ≈ old 4pl/5pl/gompertz [CONFIRM default]
+  # Fallback only when a job arrives with no models param. Matches the
+  # antigen_feature_settings.model_form_list default so the worker and the
+  # settings table agree on the full five-model curveRcore set.
+  else c("logistic5", "loglogistic5", "logistic4", "loglogistic4", "gompertz4")
 }
 
 
@@ -284,7 +287,7 @@ main <- function() {
     blank_all<- fetch_blanks(conn,   P$project_id, P$study, exp_name)
     sc_map   <- fetch_sc_conc(conn,  P$study, exp_name)
     lookup   <- DBI::dbGetQuery(conn,
-      "SELECT * FROM madi_results.curve_lookup WHERE project_id=$1 AND study_accession=$2 AND experiment_accession=$3",
+      "SELECT * FROM madi_results.curve_lookup_unmasked WHERE project_id=$1 AND study_accession=$2 AND experiment_accession=$3",
       params = list(P$project_id, P$study, exp_name))
 
     grp_rows <- combos[combos$experiment_accession == exp_name, , drop = FALSE]
