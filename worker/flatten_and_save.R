@@ -272,6 +272,87 @@ flatten_result <- function(mp, job_id, method = NULL) {
        curve_ids = unique(vapply(names(plates), function(x) suppressWarnings(as.numeric(x)), numeric(1))))
 }
 
+
+# ── FLATTEN persisted standard/blank point sets ──────────────────────────────
+# Build calib_standards / calib_blanks rows from the preprocessing output `pp`
+# (curveRcore::preprocess_standards()), NOT from the fitted object: pp carries
+# ALL rows (included + masked) with the transforms already applied, which is
+# exactly the persisted contract. `pp$data` / `pp$blanks` each span the group's
+# curve_ids (attached upstream by the worker), so rows are keyed per curve_id.
+#
+# Column mapping (handoff §5 DDL):
+#   log10_concentration <- pp$data$concentration        (x used by the fit)
+#   concentration       <- 10^log10_concentration        (raw scale)
+#   response_model      <- pp$data[[response_var]]        (model-space response)
+#   assay_response_raw  <- pp$data$assay_response_raw     (pristine response)
+#   included            <- pp$data$included
+#   exclusion_reason    <- included ? 'none' : 'masked'   (prozone/lod reserved)
+#
+# NOTE: calib_standards' PK is (curve_id, method, well, dilution). The synthetic
+# blank_option=="included" anchor row has well='blank_mean', dilution=NA and
+# would violate that PK — only relevant if the study runs with that option
+# (worker default is 'ignored').
+flatten_calib_points <- function(pp, job_id, method, response_var = "mfi",
+                                 is_log_independent = TRUE) {
+  cidv <- function(x) suppressWarnings(as.numeric(as.character(x)))
+
+  # exclusion_reason stays in the controlled vocab (none|masked); the raw
+  # `mask_reason` from the view is carried as its own column so it lands in the
+  # DB IF a mask_reason column exists (.append drops unknown columns otherwise).
+  std <- pp$data
+  std_rows <- NULL
+  if (is.data.frame(std) && nrow(std)) {
+    # Drop synthetic anchor rows (blank_option=="included" appends a
+    # well='blank_mean', dilution=NA point). It is a fit input, not an observed
+    # well, and NA dilution would violate the calib_standards PK.
+    keep <- !is.na(std$dilution)
+    if ("well" %in% names(std)) keep <- keep & (as.character(std$well) != "blank_mean")
+    std <- std[keep, , drop = FALSE]
+  }
+  if (is.data.frame(std) && nrow(std)) {
+    n    <- nrow(std)
+    logc <- .col(std$concentration, n)
+    conc <- if (isTRUE(is_log_independent)) 10^logc else logc
+    l10c <- if (isTRUE(is_log_independent)) logc else suppressWarnings(log10(conc))
+    inc  <- as.logical(.col(std$included, n, TRUE))
+    inc[is.na(inc)] <- TRUE
+    std_rows <- data.frame(
+      curve_id            = cidv(.col(std$curve_id, n, NA)),
+      method              = method,
+      well                = .id(std$well, n),
+      dilution            = .col(std$dilution, n),
+      concentration       = conc,
+      log10_concentration = l10c,
+      response_model      = .col(std[[response_var]], n),
+      assay_response_raw  = .col(std$assay_response_raw, n),
+      included            = inc,
+      exclusion_reason    = ifelse(inc, "none", "masked"),
+      mask_reason         = .col(std$mask_reason, n, NA_character_, as.character),
+      job_id              = job_id, stringsAsFactors = FALSE)
+  }
+
+  blk <- pp$blanks
+  blk_rows <- NULL
+  if (is.data.frame(blk) && nrow(blk)) {
+    n   <- nrow(blk)
+    inc <- as.logical(.col(blk$included, n, TRUE))
+    inc[is.na(inc)] <- TRUE
+    blk_rows <- data.frame(
+      curve_id           = cidv(.col(blk$curve_id, n, NA)),
+      method             = method,
+      well               = .id(blk$well, n),
+      response_model     = .col(blk[[response_var]], n),
+      assay_response_raw = .col(blk$assay_response_raw, n),
+      included           = inc,
+      exclusion_reason   = ifelse(inc, "none", "masked"),
+      mask_reason        = .col(blk$mask_reason, n, NA_character_, as.character),
+      job_id             = job_id, stringsAsFactors = FALSE)
+  }
+
+  list(standards = std_rows, blanks = blk_rows)
+}
+
+
 # recycle-safe column extractor
 .col <- function(x, n, default = NA_real_, cast = identity) {
   if (is.null(x) || length(x) == 0) return(rep(cast(default), n))
@@ -384,14 +465,16 @@ save_calib <- function(conn, flat, schema = "madi_results", verbose = TRUE) {
     # clear prior rows for these curves+method. Deleting calib_fit cascades to
     # param/gate/loo; grid/samples/diagnostics reference curve_lookup so delete
     # them explicitly.
-    for (t in c("calib_grid","calib_samples","calib_diagnostics","calib_fit")) {
+    for (t in c("calib_grid","calib_samples","calib_diagnostics",
+                "calib_standards","calib_blanks","calib_fit")) {
       DBI::dbExecute(conn, sprintf(
         "DELETE FROM %s.%s WHERE method = %s AND curve_id IN (%s)",
         schema, t, mq, id_list))
     }
 
     # insert in FK order: parents (fit) before children (param/gate/loo);
-    # grid/samples/diagnostics any time after nothing depends on them.
+    # grid/samples/diagnostics/standards/blanks reference curve_lookup, so they
+    # can be written any time (nothing depends on them).
     .append(conn, schema, "calib_fit",         flat$fit)
     .append(conn, schema, "calib_param",       flat$param)
     .append(conn, schema, "calib_gate",        flat$gate)
@@ -399,6 +482,8 @@ save_calib <- function(conn, flat, schema = "madi_results", verbose = TRUE) {
     .append(conn, schema, "calib_grid",        flat$grid)
     .append(conn, schema, "calib_samples",     flat$samples)
     .append(conn, schema, "calib_diagnostics", flat$diagnostics)
+    .append(conn, schema, "calib_standards",   flat$standards)
+    .append(conn, schema, "calib_blanks",      flat$blanks)
     TRUE
   }, error = function(e) { DBI::dbRollback(conn); stop("save_calib failed: ",
                                                        conditionMessage(e), call. = FALSE) })
@@ -406,9 +491,10 @@ save_calib <- function(conn, flat, schema = "madi_results", verbose = TRUE) {
 
   if (verbose) {
     n <- function(d) if (is.null(d)) 0L else nrow(d)
-    message(sprintf("Saved method=%s curves=%d | fit=%d param=%d gate=%d grid=%d samples=%d diag=%d loo=%d",
+    message(sprintf("Saved method=%s curves=%d | fit=%d param=%d gate=%d grid=%d samples=%d diag=%d loo=%d std=%d blank=%d",
                     method, length(ids), n(flat$fit), n(flat$param), n(flat$gate),
-                    n(flat$grid), n(flat$samples), n(flat$diagnostics), n(flat$loo)))
+                    n(flat$grid), n(flat$samples), n(flat$diagnostics), n(flat$loo),
+                    n(flat$standards), n(flat$blanks)))
   }
   invisible(TRUE)
 }

@@ -66,7 +66,7 @@ parse_args <- function(argv = commandArgs(trailingOnly = TRUE)) {
   p <- list(study = "", scope = "study", experiment = "", antigen = "",
             source = "", project_id = NA, cdan_cv = "20", job_id = "local",
             progress_dir = tempdir(), output_dir = tempdir(),
-            method = "bayesian", models = "",
+            method = "bayesian", models = "", blank_option = "ignored",
             chains = "4", warmup = "1000", sampling = "1000",
             adapt_delta = "0.9", seed = "")
   i <- 1L
@@ -117,17 +117,29 @@ discover_combos <- function(conn, study, project_id, experiment = NULL,
   DBI::dbGetQuery(conn, sql, params = prm)
 }
 
-fetch_standards <- function(conn, project_id, study, experiment) DBI::dbGetQuery(conn, "
+# Masked-inclusive sources. The *_unmasked views now project `masked` +
+# `mask_reason` and (with their mask filter left commented out) return ALL
+# wells, so the worker reads them to PERSIST masked wells with their status.
+# The INNER JOIN to header_unmasked still enforces PLATE-level masking; only
+# row-level masked wells are let through. curve resolution still uses
+# curve_lookup_unmasked (whole-curve masking). Reading the views (not the base
+# xmap_* tables) means a non-owner worker role needs SELECT on the VIEWS only —
+# the views run with the owner's rights (see grant_calib_access.sql).
+STD_SRC   <- Sys.getenv("WORKER_STD_SRC",   "madi_results.standard_unmasked")
+BLANK_SRC <- Sys.getenv("WORKER_BLANK_SRC", "madi_results.blank_unmasked")
+
+fetch_standards <- function(conn, project_id, study, experiment) DBI::dbGetQuery(conn, sprintf("
   SELECT s.antigen, h.plateid, h.plate, h.nominal_sample_dilution,
          h.sample_dilution_factor, s.antibody_mfi AS mfi,
          s.dilution AS dilution, s.feature, s.source,
-         COALESCE(s.wavelength,'__none__') AS wavelength, h.project_id
-  FROM madi_results.standard_unmasked s
+         COALESCE(s.wavelength,'__none__') AS wavelength, h.project_id,
+         s.well, COALESCE(s.masked, FALSE) AS masked, s.mask_reason
+  FROM %s s
   INNER JOIN madi_results.header_unmasked h
     ON h.study_accession = s.study_accession
    AND h.experiment_accession = s.experiment_accession
    AND TRIM(h.plate_id) = TRIM(s.plate_id)
-  WHERE h.project_id = $1 AND s.study_accession = $2 AND s.experiment_accession = $3",
+  WHERE h.project_id = $1 AND s.study_accession = $2 AND s.experiment_accession = $3", STD_SRC),
   params = list(project_id, study, experiment))
 
 fetch_samples <- function(conn, project_id, study, experiment) DBI::dbGetQuery(conn, "
@@ -143,17 +155,18 @@ fetch_samples <- function(conn, project_id, study, experiment) DBI::dbGetQuery(c
   WHERE h.project_id = $1 AND s.study_accession = $2 AND s.experiment_accession = $3",
   params = list(project_id, study, experiment))
 
-fetch_blanks <- function(conn, project_id, study, experiment) DBI::dbGetQuery(conn, "
+fetch_blanks <- function(conn, project_id, study, experiment) DBI::dbGetQuery(conn, sprintf("
   SELECT b.antigen, b.source, COALESCE(b.wavelength,'__none__') AS wavelength,
          h.plateid, h.plate, h.nominal_sample_dilution,
-         b.antibody_mfi AS mfi, h.project_id
-  FROM madi_results.blank_unmasked b
+         b.antibody_mfi AS mfi, h.project_id,
+         b.well, COALESCE(b.masked, FALSE) AS masked, b.mask_reason
+  FROM %s b
   INNER JOIN madi_results.header_unmasked h
     ON h.study_accession = b.study_accession
    AND h.experiment_accession = b.experiment_accession
    AND TRIM(h.plate_id) = TRIM(b.plate_id)
   WHERE h.project_id = $1 AND b.study_accession = $2 AND b.experiment_accession = $3
-    AND UPPER(b.stype) = 'B' AND b.antibody_mfi > 0",
+    AND UPPER(b.stype) = 'B' AND b.antibody_mfi > 0", BLANK_SRC),
   params = list(project_id, study, experiment))
 
 fetch_sc_conc <- function(conn, study, experiment) {
@@ -166,6 +179,42 @@ fetch_sc_conc <- function(conn, study, experiment) {
   if (!nrow(res)) return(list())
   res <- res[!duplicated(res$antigen), ]
   stats::setNames(as.list(as.numeric(res$standard_curve_concentration)), as.character(res$antigen))
+}
+
+# Blanks are NEVER subtracted automatically. Subtraction happens only when a
+# caller explicitly asks for it via `blank_option`; anything unrecognised (or
+# empty) collapses to "ignored" so a typo or NULL can never trigger a
+# subtraction. Allowed values:
+#   ignored        blanks are transformed for display/persistence only; the
+#                  standard responses are left untouched (DEFAULT)
+#   included       add the included-blank geometric mean as an extra fit point
+#   subtracted     subtract 1x the included-blank geomean from the standards
+#   subtracted_3x  subtract 3x
+#   subtracted_10x subtract 10x
+.BLANK_OPTS <- c("ignored", "included", "subtracted", "subtracted_3x", "subtracted_10x")
+.valid_blank_option <- function(x) {
+  x <- tolower(trimws(x %||% ""))
+  if (length(x) != 1L || is.na(x) || !(x %in% .BLANK_OPTS)) "ignored" else x
+}
+
+# Optional per-antigen blank handling, read from antigen_feature_settings ONLY
+# when the column is named explicitly (env WORKER_BLANK_OPTION_COL). Absent ->
+# empty map -> the run-level --blank_option is used (itself defaulting to
+# "ignored"). This keeps subtraction an explicit, opt-in choice rather than a
+# schema-driven surprise.
+fetch_blank_options <- function(conn, study, experiment) {
+  col <- Sys.getenv("WORKER_BLANK_OPTION_COL", "")
+  if (!nzchar(col)) return(list())
+  qcol <- DBI::dbQuoteIdentifier(conn, col)
+  res <- tryCatch(DBI::dbGetQuery(conn, sprintf("
+    SELECT DISTINCT antigen, %s AS blank_option
+    FROM madi_results.antigen_feature_settings
+    WHERE study_accession = $1 AND experiment_accession = $2
+      AND %s IS NOT NULL", qcol, qcol),
+    params = list(study, experiment)), error = function(e) data.frame())
+  if (!nrow(res)) return(list())
+  res <- res[!duplicated(res$antigen), ]
+  stats::setNames(as.list(as.character(res$blank_option)), as.character(res$antigen))
 }
 
 GROUP_COLS <- c("antigen", "feature", "source", "wavelength", "nominal_sample_dilution")
@@ -277,8 +326,17 @@ main <- function() {
   done <- 0L; failures <- 0L
   write_progress(P$progress_dir, P$job_id, total_curves, done, "running")
 
+  # Run-level default blank handling. Validated so an unknown/typo value can
+  # never trigger a subtraction — it collapses to "ignored". A per-antigen
+  # setting (fetch_blank_options) can override this per group; nothing
+  # subtracts blanks unless a value explicitly asks for it.
+  run_blank_option <- .valid_blank_option(P$blank_option)
   study_params <- list(is_log_response = TRUE, is_log_independent = TRUE,
-                       apply_prozone = TRUE, blank_option = "ignored")  # matches quickstart; blanks still go to fit for LOD [CONFIRM study defaults]
+                       apply_prozone = TRUE)
+  message(sprintf("blank handling: run default = '%s'%s", run_blank_option,
+                  if (nzchar(Sys.getenv("WORKER_BLANK_OPTION_COL")))
+                    sprintf(" (per-antigen overrides from settings.%s)",
+                            Sys.getenv("WORKER_BLANK_OPTION_COL")) else ""))
 
   for (exp_name in unique(combos$experiment_accession)) {
     message("\n==== experiment: ", exp_name, " ====")
@@ -286,6 +344,7 @@ main <- function() {
     samp_all <- fetch_samples(conn,  P$project_id, P$study, exp_name)
     blank_all<- fetch_blanks(conn,   P$project_id, P$study, exp_name)
     sc_map   <- fetch_sc_conc(conn,  P$study, exp_name)
+    bo_map   <- fetch_blank_options(conn, P$study, exp_name)
     lookup   <- DBI::dbGetQuery(conn,
       "SELECT * FROM madi_results.curve_lookup_unmasked WHERE project_id=$1 AND study_accession=$2 AND experiment_accession=$3",
       params = list(P$project_id, P$study, exp_name))
@@ -296,6 +355,7 @@ main <- function() {
       tag <- sprintf("%s | %s | src=%s wl=%s nom=%s", exp_name, grp$antigen,
                      grp$source, grp$wavelength, grp$nominal_sample_dilution)
       sc  <- sc_map[[as.character(grp$antigen)]] %||% as.numeric(grp$nominal_sample_dilution)
+      bo  <- .valid_blank_option(bo_map[[as.character(grp$antigen)]] %||% run_blank_option)
 
       res <- tryCatch({
         std_g <- attach_curve_id(slice_group(std_all,  grp), lookup, P$study, exp_name)
@@ -323,17 +383,34 @@ main <- function() {
           message(sprintf("  note: %d/%d sample row(s) had no curve_id, skipped",
                           n_samp_in - n_samp_out, n_samp_in))
 
+        # Row-level mask status -> included flag (TRUE = enters the fit).
+        # Masked wells are retained here; they are transformed and persisted but
+        # NEVER handed to the fitter.
+        std_g$included <- !(as.logical(std_g$masked) %in% TRUE)
+        if (!is.null(blk_g)) blk_g$included <- !(as.logical(blk_g$masked) %in% TRUE)
+
+        # Preprocess the FULL set (stats from included; transforms applied to
+        # all rows). Keep the whole object: $data + $blanks are persisted, and
+        # the fitter is fed only the included subset.
         pp <- preprocess_standards(
           data = std_g, antigen_settings = list(standard_curve_concentration = sc),
           response_variable = "mfi", independent_variable = "concentration",
           is_log_response = study_params$is_log_response,
-          blank_data = blk_g, blank_option = study_params$blank_option,
+          blank_data = blk_g, blank_option = bo,
           is_log_independent = study_params$is_log_independent,
-          apply_prozone = study_params$apply_prozone)$data
+          apply_prozone = study_params$apply_prozone,
+          include_col = "included")
+
+        # Fit inputs: included rows only — byte-identical to the pre-mask fit.
+        std_fit <- pp$data[pp$data$included %in% TRUE, , drop = FALSE]
+        blk_fit <- if (is.null(blk_g)) NULL else {
+          bf <- blk_g[blk_g$included %in% TRUE, , drop = FALSE]
+          if (nrow(bf)) bf else NULL
+        }
 
         if (is_bayes) {
           mp <- curveRbayes::fit_calibration_bayes(
-            standards = pp, samples = samp_g, blanks = blk_g,
+            standards = std_fit, samples = samp_g, blanks = blk_fit,
             response_var = "mfi", model_names = models,
             is_log_response = study_params$is_log_response,
             is_log_independent = study_params$is_log_independent,
@@ -343,7 +420,7 @@ main <- function() {
             seed = seed, run_loo = TRUE, verbose = FALSE)
         } else {
           mp <- curveRfreq::fit_calibration_freq_multiplate(
-            standards = pp, blanks = blk_g, samples = samp_g,
+            standards = std_fit, blanks = blk_fit, samples = samp_g,
             response_var = "mfi", model_names = models,
             is_log_response = study_params$is_log_response,
             is_log_independent = study_params$is_log_independent,
@@ -353,8 +430,16 @@ main <- function() {
         mp <- curveRcore::compute_detection_limits_multiplate(mp)
 
         flat <- flatten_result(mp, job_id = P$job_id, method = method)
+        # Attach the persisted standard/blank point sets (ALL rows, with status)
+        # built from the preprocessing output, not from the fitted object.
+        pts <- flatten_calib_points(pp, job_id = P$job_id, method = method,
+                                    response_var = "mfi",
+                                    is_log_independent = study_params$is_log_independent)
+        flat$standards <- pts$standards
+        flat$blanks    <- pts$blanks
         save_calib(conn, flat)
-        v <- verify_saved(mp, job_id = P$job_id, method = method, conn = conn, verbose = FALSE)
+        v <- verify_saved(mp, job_id = P$job_id, method = method, conn = conn,
+                          points = pp, verbose = FALSE)
         if (!isTRUE(v$ok)) warning(tag, ": verify_saved reported failures")
         grp$n_plate
       }, error = function(e) { message("  FAIL ", tag, " :: ", conditionMessage(e)); NA_integer_ })

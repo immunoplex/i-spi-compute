@@ -145,6 +145,11 @@ suppressWarnings(suppressMessages({
 #' @param method "frequentist"/"bayesian"; defaults to the object's method.
 #' @param conn Optional DBI connection; opened from env vars if NULL.
 #' @param schema Schema holding the calib_* tables. Default "madi_results".
+#' @param points Optional preprocessing output (`curveRcore::preprocess_standards()`,
+#'   i.e. the `pp` object with `$data` and `$blanks`). When supplied, the
+#'   persisted `calib_standards` / `calib_blanks` are verified against it
+#'   (per-curve row counts, plus informational included/excluded checks).
+#'   NULL skips those checks so callers that never persisted points still pass.
 #' @param verbose Print a readable report. Default TRUE.
 #'
 #' @return Invisibly, a list: ok (logical), checks (data frame), soft (data
@@ -154,6 +159,7 @@ verify_saved <- function(mp,
                          method  = NULL,
                          conn    = NULL,
                          schema  = "madi_results",
+                         points  = NULL,
                          verbose = TRUE) {
 
   exp <- .vs_expected(mp, method)
@@ -176,6 +182,36 @@ verify_saved <- function(mp,
   samp_obs  <- .vs_counts(conn, schema, "calib_samples",     method, curve_ids, job_id)
   diag_obs  <- .vs_counts(conn, schema, "calib_diagnostics", method, curve_ids, job_id)
   loo_obs   <- .vs_counts(conn, schema, "calib_loo",         method, curve_ids, job_id)
+
+  # persisted point sets (only checked when the caller passes `points` = pp)
+  std_obs <- blk_obs <- NULL
+  std_exp <- blk_exp <- NULL
+  if (!is.null(points)) {
+    std_obs <- .vs_counts(conn, schema, "calib_standards", method, curve_ids, job_id,
+                          extra_select = "SUM(CASE WHEN included THEN 1 ELSE 0 END) AS n_incl")
+    blk_obs <- .vs_counts(conn, schema, "calib_blanks",    method, curve_ids, job_id)
+    # expected per-curve counts derived from pp (upstream of the save code)
+    .per_curve <- function(df) {
+      if (!is.data.frame(df) || !nrow(df) || !("curve_id" %in% names(df)))
+        return(list(n = stats::setNames(integer(0), character(0)),
+                    inc = stats::setNames(integer(0), character(0))))
+      cc  <- as.character(df$curve_id)
+      inc <- if ("included" %in% names(df)) (df$included %in% TRUE) else rep(TRUE, nrow(df))
+      list(n = tapply(seq_len(nrow(df)), cc, length),
+           inc = tapply(inc, cc, sum))
+    }
+    # Exclude the synthetic blank_option=="included" anchor (well='blank_mean',
+    # dilution=NA) from the expected standards — flatten_calib_points drops it
+    # too (it would violate the calib_standards PK), so counts must agree.
+    std_src <- points$data
+    if (is.data.frame(std_src) && nrow(std_src) && "dilution" %in% names(std_src)) {
+      k <- !is.na(std_src$dilution)
+      if ("well" %in% names(std_src)) k <- k & (as.character(std_src$well) != "blank_mean")
+      std_src <- std_src[k, , drop = FALSE]
+    }
+    std_exp <- .per_curve(std_src)
+    blk_exp <- .per_curve(points$blanks)
+  }
 
   # helper: observed n for a curve_id from a counts frame (0 if absent)
   obs_n <- function(df, cid, col = "n") {
@@ -218,6 +254,31 @@ verify_saved <- function(mp,
       mk(cid, "calib_param", "n_param_rows", exp$exp_param[i], obs_n(param_obs, cid)),
       mk(cid, "calib_loo",   "n_loo_rows",   exp$exp_loo[i],   obs_n(loo_obs, cid))
     ))
+
+    # persisted point sets (mask-aware contract) — only when `points` supplied
+    if (!is.null(points)) {
+      gett <- function(t, k) {
+        if (is.null(t)) return(0L)
+        v <- unname(t[as.character(k)])
+        if (length(v) == 0L || is.na(v)) 0L else as.integer(v)
+      }
+      exp_std <- gett(std_exp$n,  cid); exp_std_inc <- gett(std_exp$inc, cid)
+      exp_blk <- gett(blk_exp$n,  cid)
+      obs_std <- obs_n(std_obs, cid);   obs_std_inc <- obs_n(std_obs, cid, "n_incl")
+      obs_blk <- obs_n(blk_obs, cid)
+
+      hard <- c(hard, list(
+        mk(cid, "calib_standards", "n_points", exp_std, obs_std),
+        mk(cid, "calib_blanks",    "n_points", exp_blk, obs_blk)
+      ))
+      soft <- c(soft, list(
+        mk(cid, "calib_standards", "n_included", exp_std_inc, obs_std_inc),
+        # informational: masked points should be present & carry included=FALSE
+        mk(cid, "calib_standards", "has_excluded",
+           if (exp_std - exp_std_inc > 0) "true" else "false",
+           if (obs_std - obs_std_inc > 0) "true" else "false")
+      ))
+    }
     if (!is.na(exp$exp_gate[i]))
       soft <- c(soft, list(mk(cid, "calib_gate", "n_gates", exp$exp_gate[i], obs_n(gate_obs, cid))))
   }
