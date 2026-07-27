@@ -54,12 +54,18 @@ ENV CMDSTAN=/opt/cmdstan/current
 # Install the packages EXPLICITLY in dependency order (not just the meta-package,
 # which treats curveRbayes/curveRweights as optional and can leave them out).
 # Installed after CmdStan so curveRbayes' Stan build succeeds.
+# curveRcore is pinned to a released tag so a version bump forces a clean
+# reinstall (the ARG value is part of this layer's cache key). The other curveR
+# packages track their default branch — they have no v0.3.0 tag.
 ARG CURVER_REF=main
+# Pinned: curveRcore at a released tag (cache-busts on CURVER_REF change).
+RUN R -e "remotes::install_github('immunoplex/curveRcore@${CURVER_REF}', upgrade='never')"
+# Unpinned: the rest track main. Installed AFTER curveRcore so they build
+# against it. (curveRbayes compiles Stan; keep it after CmdStan as before.)
 RUN R -e "remotes::install_github(c( \
-      'immunoplex/curveRcore@${CURVER_REF}', \
-      'immunoplex/curveRfreq@${CURVER_REF}', \
-      'immunoplex/curveRbayes@${CURVER_REF}', \
-      'immunoplex/curveRweights@${CURVER_REF}'), upgrade='never')"
+      'immunoplex/curveRfreq', \
+      'immunoplex/curveRbayes', \
+      'immunoplex/curveRweights'), upgrade='never')"
 
 # Hard verify: fail the BUILD (loudly) if any required package can't load, so a
 # silent partial install can never reach runtime again.
