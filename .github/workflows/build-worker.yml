@@ -9,6 +9,7 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/i-spi-compute-worker
+  CURVER_REF: v0.3.0          # <-- curveR packages ref/tag to install; bump to rebuild
 
 jobs:
   build-and-push:
@@ -18,9 +19,6 @@ jobs:
       packages: write
       attestations: write
       id-token: write
-
-    # Worker build is heavy (~20 min for Stan compilation).
-    # GitHub Actions default timeout is 360 min, but set explicitly.
     timeout-minutes: 60
 
     steps:
@@ -55,9 +53,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Worker is amd64-only (Stan compilation on arm64 is unreliable)
           platforms: linux/amd64
-          # Cache R package installs + Stan compilation across builds
+          build-args: |
+            CURVER_REF=${{ env.CURVER_REF }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

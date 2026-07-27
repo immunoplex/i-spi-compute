@@ -54,11 +54,12 @@ ENV CMDSTAN=/opt/cmdstan/current
 # Install the packages EXPLICITLY in dependency order (not just the meta-package,
 # which treats curveRbayes/curveRweights as optional and can leave them out).
 # Installed after CmdStan so curveRbayes' Stan build succeeds.
+ARG CURVER_REF=main
 RUN R -e "remotes::install_github(c( \
-      'immunoplex/curveRcore', \
-      'immunoplex/curveRfreq', \
-      'immunoplex/curveRbayes', \
-      'immunoplex/curveRweights'), upgrade='never')"
+      'immunoplex/curveRcore@${CURVER_REF}', \
+      'immunoplex/curveRfreq@${CURVER_REF}', \
+      'immunoplex/curveRbayes@${CURVER_REF}', \
+      'immunoplex/curveRweights@${CURVER_REF}'), upgrade='never')"
 
 # Hard verify: fail the BUILD (loudly) if any required package can't load, so a
 # silent partial install can never reach runtime again.
