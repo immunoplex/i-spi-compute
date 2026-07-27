@@ -62,10 +62,18 @@ ARG CURVER_REF=main
 RUN R -e "remotes::install_github('immunoplex/curveRcore@${CURVER_REF}', upgrade='never')"
 # Unpinned: the rest track main. Installed AFTER curveRcore so they build
 # against it. (curveRbayes compiles Stan; keep it after CmdStan as before.)
-RUN R -e "remotes::install_github(c( \
-      'immunoplex/curveRfreq', \
-      'immunoplex/curveRbayes', \
-      'immunoplex/curveRweights'), upgrade='never')"
+# Fitters from main, FORCED to rebuild against the curveRcore just installed.
+#    force=TRUE reinstalls even if the version string is unchanged (main is still
+#    0.2.0), so they are recompiled against the pinned curveRcore rather than
+#    served from the buildx cache. CURVER_REF in the command text ties this
+#    layer's cache key to the pin, so bumping the tag re-runs this too.
+RUN R -e "message('rebuilding fitters against curveRcore ', packageVersion('curveRcore'), ' (ref ${CURVER_REF})'); \
+          remotes::install_github(c( \
+            'immunoplex/curveRfreq', \
+            'immunoplex/curveRbayes', \
+            'immunoplex/curveRweights'), upgrade='never')"
+
+#                        'immunoplex/curveRweights'), upgrade='never', force=TRUE)"
 
 # Hard verify: fail the BUILD (loudly) if any required package can't load, so a
 # silent partial install can never reach runtime again.

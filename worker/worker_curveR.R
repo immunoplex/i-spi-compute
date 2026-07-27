@@ -401,11 +401,24 @@ main <- function() {
           apply_prozone = study_params$apply_prozone,
           include_col = "included")
 
-        # Fit inputs: included rows only — byte-identical to the pre-mask fit.
-        std_fit <- pp$data[pp$data$included %in% TRUE, , drop = FALSE]
+        # Fit inputs: included rows only. We ALSO strip the mask-aware columns
+        # that this pipeline attaches (curveRcore >=0.3.0's preprocess adds
+        # `included` + `assay_response_raw`; the worker adds `included`/`masked`
+        # above). The downstream fitters (curveRfreq / curveRbayes / curveRweights)
+        # are UNCHANGED and expect the pre-mask frame shape, so we hand them exactly
+        # that — byte-identical to the pre-mask fit. Persistence is unaffected: it
+        # reads the full `pp` object, so calib_standards/calib_blanks keep every
+        # column and every (incl. masked) row. Only the fit INPUT is trimmed.
+        .fit_cols <- function(df) {
+          if (is.null(df)) return(df)
+          df[, setdiff(names(df), c("included", "assay_response_raw", "masked")),
+             drop = FALSE]
+        }
+        std_fit <- .fit_cols(pp$data[pp$data$included %in% TRUE, , drop = FALSE])
+
         blk_fit <- if (is.null(blk_g)) NULL else {
           bf <- blk_g[blk_g$included %in% TRUE, , drop = FALSE]
-          if (nrow(bf)) bf else NULL
+          if (nrow(bf)) .fit_cols(bf) else NULL
         }
 
         if (is_bayes) {
