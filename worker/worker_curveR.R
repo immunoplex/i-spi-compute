@@ -217,6 +217,9 @@ GROUP_COLS <- c("antigen", "feature", "source", "wavelength", "nominal_sample_di
 # are grouped and keyed to a curve WITHOUT source. plate/antigen/feature/
 # wavelength/nominal still identify the curve uniquely (plateid encodes nominal).
 SAMPLE_GROUP_COLS <- setdiff(GROUP_COLS, "source")
+# Blanks (buffer wells) carry NO `source` -- it is NULL on every xmap_buffer row
+# (verified) -- so, exactly like samples, they must slice/resolve without it.
+BLANK_GROUP_COLS  <- setdiff(GROUP_COLS, "source")
 slice_group <- function(df, grp, cols = GROUP_COLS) {
   if (is.null(df) || !nrow(df)) return(df[0, , drop = FALSE])
   keep <- rep(TRUE, nrow(df))
@@ -233,6 +236,7 @@ slice_group <- function(df, grp, cols = GROUP_COLS) {
 NK <- c("project_id","study_accession","experiment_accession","plateid","plate",
         "nominal_sample_dilution","source","wavelength","antigen","feature")
 SAMPLE_NK <- setdiff(NK, "source")   # samples resolve to a curve without 'source'
+BLANK_NK  <- setdiff(NK, "source")   # blanks likewise: source is NULL in xmap_buffer
 attach_curve_id <- function(df, lookup, study, experiment, group_feature = NULL,
                             key_cols = NK) {
   if (is.null(df) || !nrow(df)) return(df)
@@ -356,8 +360,9 @@ main <- function() {
         std_g <- attach_curve_id(slice_group(std_all,  grp), lookup, P$study, exp_name)
         samp_g<- attach_curve_id(slice_group(samp_all, grp, SAMPLE_GROUP_COLS),
                                  lookup, P$study, exp_name, key_cols = SAMPLE_NK)
-        blk_g <- attach_curve_id(slice_group(blank_all, grp), lookup, P$study, exp_name,
-                                 group_feature = grp$feature)
+        blk_g <- attach_curve_id(slice_group(blank_all, grp, BLANK_GROUP_COLS),
+                                 lookup, P$study, exp_name,
+                                 group_feature = grp$feature, key_cols = BLANK_NK)
 
         if (anyNA(std_g$curve_id))
           stop(sprintf("%d standard row(s) did not resolve to a curve_lookup id",
