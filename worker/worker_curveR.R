@@ -120,52 +120,47 @@ discover_combos <- function(conn, study, project_id, experiment = NULL,
 # Masked-inclusive sources. The *_unmasked views now project `masked` +
 # `mask_reason` and (with their mask filter left commented out) return ALL
 # wells, so the worker reads them to PERSIST masked wells with their status.
-# The INNER JOIN to header_unmasked still enforces PLATE-level masking; only
-# row-level masked wells are let through. curve resolution still uses
-# curve_lookup_unmasked (whole-curve masking). Reading the views (not the base
-# xmap_* tables) means a non-owner worker role needs SELECT on the VIEWS only —
-# the views run with the owner's rights (see grant_calib_access.sql).
+# curve resolution still uses curve_lookup_unmasked (whole-curve masking).
+# Reading the views (not the base xmap_* tables) means a non-owner worker role
+# needs SELECT on the VIEWS only — the views run with the owner's rights.
+#
+# NOTE: these reads no longer join header_unmasked. `plate`, `plateid`,
+# `nominal_sample_dilution`, and `project_id` are denormalized onto the
+# standard/blank/sample rows, so we read them directly. The old
+# `TRIM(plate_id)=TRIM(plate_id)` join fanned every well out by the number of
+# header rows sharing that plate_id (plate_id is not unique at plate grain),
+# which broke the calib_standards/calib_blanks PK. If PLATE-level masking is
+# ever enforced, it must be applied explicitly here — it is NOT provided by the
+# *_unmasked views (their mask filter is currently commented out).
 STD_SRC   <- Sys.getenv("WORKER_STD_SRC",   "madi_results.standard_unmasked")
 BLANK_SRC <- Sys.getenv("WORKER_BLANK_SRC", "madi_results.blank_unmasked")
 
 fetch_standards <- function(conn, project_id, study, experiment) DBI::dbGetQuery(conn, sprintf("
-  SELECT s.antigen, h.plateid, h.plate, h.nominal_sample_dilution,
-         h.sample_dilution_factor, s.antibody_mfi AS mfi,
+  SELECT s.antigen, s.plateid, s.plate, s.nominal_sample_dilution,
+         s.antibody_mfi AS mfi,
          s.dilution AS dilution, s.feature, s.source,
-         COALESCE(s.wavelength,'__none__') AS wavelength, h.project_id,
+         COALESCE(s.wavelength,'__none__') AS wavelength, s.project_id,
          s.well, COALESCE(s.masked, FALSE) AS masked, s.mask_reason
   FROM %s s
-  INNER JOIN madi_results.header_unmasked h
-    ON h.study_accession = s.study_accession
-   AND h.experiment_accession = s.experiment_accession
-   AND TRIM(h.plate_id) = TRIM(s.plate_id)
-  WHERE h.project_id = $1 AND s.study_accession = $2 AND s.experiment_accession = $3", STD_SRC),
+  WHERE s.project_id = $1 AND s.study_accession = $2 AND s.experiment_accession = $3", STD_SRC),
   params = list(project_id, study, experiment))
 
 fetch_samples <- function(conn, project_id, study, experiment) DBI::dbGetQuery(conn, "
-  SELECT s.antigen, h.plateid, h.plate, h.nominal_sample_dilution,
+  SELECT s.antigen, s.plateid, s.plate, s.nominal_sample_dilution,
          s.sampleid, s.antibody_mfi AS mfi, s.dilution, s.timeperiod,
          s.patientid, s.well, s.feature, s.source,
-         COALESCE(s.wavelength,'__none__') AS wavelength, h.project_id
+         COALESCE(s.wavelength,'__none__') AS wavelength, s.project_id
   FROM madi_results.sample_unmasked s
-  INNER JOIN madi_results.header_unmasked h
-    ON h.study_accession = s.study_accession
-   AND h.experiment_accession = s.experiment_accession
-   AND TRIM(h.plate_id) = TRIM(s.plate_id)
-  WHERE h.project_id = $1 AND s.study_accession = $2 AND s.experiment_accession = $3",
+  WHERE s.project_id = $1 AND s.study_accession = $2 AND s.experiment_accession = $3",
   params = list(project_id, study, experiment))
 
 fetch_blanks <- function(conn, project_id, study, experiment) DBI::dbGetQuery(conn, sprintf("
   SELECT b.antigen, b.source, COALESCE(b.wavelength,'__none__') AS wavelength,
-         h.plateid, h.plate, h.nominal_sample_dilution,
-         b.antibody_mfi AS mfi, h.project_id,
+         b.plateid, b.plate, b.nominal_sample_dilution,
+         b.antibody_mfi AS mfi, b.project_id,
          b.well, COALESCE(b.masked, FALSE) AS masked, b.mask_reason
   FROM %s b
-  INNER JOIN madi_results.header_unmasked h
-    ON h.study_accession = b.study_accession
-   AND h.experiment_accession = b.experiment_accession
-   AND TRIM(h.plate_id) = TRIM(b.plate_id)
-  WHERE h.project_id = $1 AND b.study_accession = $2 AND b.experiment_accession = $3
+  WHERE b.project_id = $1 AND b.study_accession = $2 AND b.experiment_accession = $3
     AND UPPER(b.stype) = 'B' AND b.antibody_mfi > 0", BLANK_SRC),
   params = list(project_id, study, experiment))
 
