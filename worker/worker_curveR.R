@@ -105,18 +105,26 @@ open_conn <- function() {
 
 
 # ── FETCH: read the fit-delivery views by curve_id ───────────────────────────
+# NOTE: RPostgres does NOT bind an R vector to a PG array parameter — a
+# length-N vector param is treated as N row-wise executions, which yields
+# "malformed array literal" on `= ANY($1)` and a length-mismatch on any
+# multi-param query. curve_ids are integers we fully control, so we interpolate
+# them into an `IN (...)` list — the same idiom save_calib()/verify_saved()
+# already use. .in_ids() coerces to integer and drops non-numerics, so nothing
+# but digits ever reaches the SQL (no injection surface).
+.in_ids <- function(curve_ids) {
+  v <- suppressWarnings(as.integer(curve_ids)); v <- v[!is.na(v)]
+  if (!length(v)) "NULL" else paste(v, collapse = ",")   # IN (NULL) -> no rows
+}
 # One row per standard well; carries curve_id, multiplate_group_id, masked, ...
-fetch_std_for_fit <- function(conn, curve_ids) DBI::dbGetQuery(conn,
-  "SELECT * FROM madi_results.standard_for_fit WHERE curve_id = ANY($1)",
-  params = list(curve_ids))
+fetch_std_for_fit <- function(conn, curve_ids) DBI::dbGetQuery(conn, sprintf(
+  "SELECT * FROM madi_results.standard_for_fit WHERE curve_id IN (%s)", .in_ids(curve_ids)))
 # One row per (blank well x standard-source curve) — the view's 1-to-many grain.
-fetch_blk_for_fit <- function(conn, curve_ids) DBI::dbGetQuery(conn,
-  "SELECT * FROM madi_results.blank_for_fit  WHERE curve_id = ANY($1)",
-  params = list(curve_ids))
+fetch_blk_for_fit <- function(conn, curve_ids) DBI::dbGetQuery(conn, sprintf(
+  "SELECT * FROM madi_results.blank_for_fit  WHERE curve_id IN (%s)", .in_ids(curve_ids)))
 # Unmasked samples only.
-fetch_smp_for_fit <- function(conn, curve_ids) DBI::dbGetQuery(conn,
-  "SELECT * FROM madi_results.sample_for_fit WHERE curve_id = ANY($1)",
-  params = list(curve_ids))
+fetch_smp_for_fit <- function(conn, curve_ids) DBI::dbGetQuery(conn, sprintf(
+  "SELECT * FROM madi_results.sample_for_fit WHERE curve_id IN (%s)", .in_ids(curve_ids)))
 
 
 # ── Per-antigen settings (standard_curve_concentration, blank_option) ─────────
@@ -145,8 +153,9 @@ fetch_smp_for_fit <- function(conn, curve_ids) DBI::dbGetQuery(conn,
     ants <- unique(as.character(std$antigen))
     ants <- ants[!is.na(ants) & nzchar(ants)]
     if (!length(ants)) return(list())
+    in_lit <- paste(DBI::dbQuoteLiteral(conn, ants), collapse = ",")
     tryCatch(DBI::dbGetQuery(conn,
-      paste0(base, " WHERE antigen = ANY($1)", filt), params = list(ants)),
+      paste0(base, sprintf(" WHERE antigen IN (%s)", in_lit), filt)),
       error = function(e) data.frame())
   } else {
     acc <- lapply(seq_len(nrow(se)), function(i) tryCatch(DBI::dbGetQuery(conn,
