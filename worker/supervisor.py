@@ -1,5 +1,5 @@
 """
-immunoplex_batch_calculator — Worker Supervisor
+i-spi-compute — Worker Supervisor
 
 Thin Python process that:
 1. BLPOP on Redis queue (ispi:batch:queue)
@@ -8,6 +8,11 @@ Thin Python process that:
 4. Spawns the script with common + script-specific CLI args
 5. Monitors progress file written by the script
 6. Updates job status in Redis (running → completed/failed)
+
+A job is a **batch of curve_ids** (see HANDOFF_worker_curve_id_batch.md). The
+supervisor forwards the batch to the worker via a single comma-joined
+`--curve_ids` argument (and optional `--multiplate_group_ids`); it does not
+resolve or understand scope.
 
 This runs as the main process in the worker container.
 """
@@ -31,7 +36,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     stream=sys.stdout,
 )
-logger = logging.getLogger("immunoplex_worker")
+logger = logging.getLogger("i_spi_compute_worker")
 
 # ── Config ───────────────────────────────────────────────────────────────────
 
@@ -44,7 +49,6 @@ QUEUE_KEY = "ispi:batch:queue"
 JOB_PREFIX = "ispi:job:"
 
 PROGRESS_DIR = Path(os.getenv("PROGRESS_DIR", "/tmp"))
-OUTPUT_BASE = Path(os.getenv("OUTPUT_DIR", "/data/bayes"))
 
 # ── Script Registry ───────────────────────────────────────────────────────
 # Maps script_type → (interpreter, script_path, method_flag).
@@ -130,7 +134,11 @@ def _human_time(secs: float) -> str:
 
 
 def sync_progress_to_redis(r: redis.Redis, job_id: str, job_started_at: float):
-    """Read progress file and push updates to Redis, including % and ETA."""
+    """Read progress file and push updates to Redis, including % and ETA.
+
+    The progress file speaks in generic 'combos' (units of work). For the curveR
+    worker one unit = one curve, so total_combos == n_curves in the batch.
+    """
     progress = read_progress(job_id)
     if progress is None:
         return
@@ -153,7 +161,7 @@ def sync_progress_to_redis(r: redis.Redis, job_id: str, job_started_at: float):
         elapsed_min = round(elapsed_secs / 60, 1)
         fields["elapsed_minutes"] = elapsed_min
 
-        # Speed and ETA based on completed combos
+        # Speed and ETA based on completed units
         if done > 0 and done < total:
             secs_per_combo = elapsed_secs / done
             remaining_secs = secs_per_combo * (total - done)
@@ -170,18 +178,9 @@ def sync_progress_to_redis(r: redis.Redis, job_id: str, job_started_at: float):
             fields["speed_seconds_per_combo"] = ""
             fields["eta_display"] = "estimating..."
 
-    if progress.get("current_experiment"):
-        fields["current_experiment"] = progress["current_experiment"]
-    if progress.get("current_antigens"):
-        fields["current_antigens"] = progress["current_antigens"]
-
-    # Experiment-level progress
-    exp_done = progress.get("experiments_done", 0)
-    exp_total = progress.get("experiments_total", 0)
-    if exp_total:
-        fields["experiments_done"] = exp_done
-        fields["experiments_total"] = exp_total
-        fields["experiment_progress"] = f"{exp_done}/{exp_total}"
+    # The worker reports the multiplate group it is currently fitting.
+    if progress.get("current_group"):
+        fields["current_group"] = progress["current_group"]
 
     if fields:
         update_job(r, job_id, **fields)
@@ -217,13 +216,22 @@ def run_job(r: redis.Redis, job_id: str, job_data: dict):
 
     interpreter, script_path, method_flag = SCRIPT_REGISTRY[script_type]
 
-    # ── Common fields ─────────────────────────────────────────────────────
-    study = job_data.get("study", "")
-    experiment = job_data.get("experiment", "")
-    antigen = job_data.get("antigen", "")
-    source = job_data.get("source", "")
-    scope = job_data.get("scope", "study")
-    project_id = job_data.get("project_id", "0")
+    # ── Batch fields ──────────────────────────────────────────────────────
+    try:
+        curve_ids = json.loads(job_data.get("curve_ids", "[]"))
+    except (json.JSONDecodeError, TypeError):
+        curve_ids = []
+    try:
+        group_ids = json.loads(job_data.get("multiplate_group_ids", "[]"))
+    except (json.JSONDecodeError, TypeError):
+        group_ids = []
+
+    if not curve_ids:
+        now = datetime.now(timezone.utc).isoformat()
+        update_job(r, job_id, status="failed", completed_at=now,
+                   error="Job has no curve_ids to fit")
+        logger.error("Job %s failed: empty curve_ids", job_id)
+        return
 
     # Parse script-specific params from JSON
     try:
@@ -235,35 +243,28 @@ def run_job(r: redis.Redis, job_id: str, job_data: dict):
     job_started_at = time.time()
     update_job(r, job_id, status="running", started_at=now)
     logger.info(
-        "Starting job %s: script=%s study=%s experiment=%s scope=%s",
-        job_id, script_type, study, experiment, scope,
+        "Starting job %s: script=%s method=%s n_curves=%d",
+        job_id, script_type, method_flag, len(curve_ids),
     )
 
-    # Build output directory
-    output_dir = OUTPUT_BASE / study
-    output_dir.mkdir(parents=True, exist_ok=True)
-
     # ── Build command ─────────────────────────────────────────────────────
-    # Common args that every script receives
+    # A list over argv is transported as a single comma-joined arg; the worker
+    # splits it on commas. curve_ids are ints; group ids are opaque strings.
+    curve_ids_arg = ",".join(str(int(c)) for c in curve_ids)
+
     cmd = [
         interpreter,
         str(script_path),
-        "--study", study,
-        "--scope", scope,
         "--job_id", job_id,
-        "--project_id", project_id,
-        "--output_dir", str(output_dir),
         "--progress_dir", str(PROGRESS_DIR),
+        "--curve_ids", curve_ids_arg,
     ]
     # curveR worker selects engine via --method (bayesian|frequentist)
     if method_flag:
         cmd.extend(["--method", method_flag])
-    if experiment:
-        cmd.extend(["--experiment", experiment])
-    if antigen:
-        cmd.extend(["--antigen", antigen])
-    if source:
-        cmd.extend(["--source", source])
+    # Optional integrity check: hand over the app's intended grouping.
+    if group_ids:
+        cmd.extend(["--multiplate_group_ids", ",".join(str(g) for g in group_ids)])
 
     # Script-specific params from the params dict → --key value
     for key, value in params.items():
@@ -271,11 +272,9 @@ def run_job(r: redis.Redis, job_id: str, job_data: dict):
 
     # ── Environment ───────────────────────────────────────────────────────
     env = os.environ.copy()
-    # worker_curveR.R sets options(mc.cores) from parallel::detectCores() at
-    # startup. NOTE: detectCores() is NOT cgroup-aware, so under K8s/Docker CPU
-    # limits it may over-report cores. If you pin CPU, consider capping cores via
-    # an env var the worker reads, or make the worker cgroup-aware. We do not set
-    # threading here — the R process controls its own.
+    # worker_curveR.R caps cores from WORKER_CORES (falling back to
+    # detectCores(), which is NOT cgroup-aware). Set WORKER_CORES == the
+    # container CPU limit in the deployment. We do not set threading here.
 
     logger.info("Spawning: %s", " ".join(cmd))
 
@@ -384,17 +383,13 @@ def run_job(r: redis.Redis, job_id: str, job_data: dict):
 
 def main():
     logger.info("=" * 60)
-    logger.info("Immunoplex Batch Runner — Worker starting")
+    logger.info("i-spi-compute — Worker starting")
     logger.info("  Redis: %s:%s/%s", REDIS_HOST, REDIS_PORT, REDIS_DB)
     logger.info("  Queue: %s", QUEUE_KEY)
-    logger.info("  Output: %s", OUTPUT_BASE)
     logger.info("  Scripts: %s", ", ".join(
         f"{k} → {v[1].name}" for k, v in SCRIPT_REGISTRY.items()
     ))
     logger.info("=" * 60)
-
-    # Ensure output directory exists
-    OUTPUT_BASE.mkdir(parents=True, exist_ok=True)
 
     r = get_redis()
 

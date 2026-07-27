@@ -1,9 +1,19 @@
 # i-spi-compute
 
 Background job system for running computationally expensive calibration-curve
-fitting (**Bayesian** and **frequentist**) outside the i-spi Shiny app. Jobs are
-submitted to a REST API, queued in Redis, and processed by worker containers that
-fit curves with the **curveR** engine and save results directly to PostgreSQL.
+fitting (**Bayesian** and **frequentist**) outside the i-spi Shiny app. A job is
+a **batch of `curve_id`s** to fit. Jobs are submitted to a REST API, queued in
+Redis, and processed by worker containers that read the batch from the
+`*_for_fit` views, group it into multiplate fitting units by
+`multiplate_group_id`, fit curves with the **curveR** engine, and save results
+directly to PostgreSQL.
+
+> **Job contract (curve_id batch).** `curve_id`s are minted at load time and
+> pre-exist fitting; `curve_lookup` is the authoritative registry. Resolving
+> *scope* (study / experiment / antigen) to `curve_id`s is a `curve_lookup`
+> query the **client** already performs (the i-spi coverage panel). The client
+> sends the resolved batch; the worker never re-derives scope or natural keys.
+> See `HANDOFF_worker_curve_id_batch.md`.
 
 `i-spi-compute` is the **application tier** (api + worker + redis). The science
 lives in the separately-versioned **curveR** R packages
@@ -29,11 +39,11 @@ end this tier serves.
              ▼
   ┌──────────────────────┐
   │  i-spi-compute-worker  │
-  │   supervisor.py        │  Dispatches SCRIPT_REGISTRY[script_type] + --method
-  │     └─ Rscript ───────┐│
-  │        worker_curveR.R ││  bayesian / frequentist (curveR + CmdStan)
-  │        + flatten_and_save.R
-  │        + verify_saved.R
+  │   supervisor.py        │  Dispatches SCRIPT_REGISTRY[script_type] + --method,
+  │     └─ Rscript ───────┐│  forwards --curve_ids (the batch)
+  │        worker_curveR.R ││  reads *_for_fit views WHERE curve_id = ANY(batch),
+  │        + flatten_and_save.R  groups by multiplate_group_id, fits each group
+  │        + verify_saved.R ││  (bayesian / frequentist; curveR + CmdStan)
   └──────────┬───────────┘
              │ idempotent write (delete-by-(curve_id,method) then insert)
              ▼
@@ -83,35 +93,38 @@ in production).
 
 ### POST /jobs — Submit a Job
 
+Submit the resolved batch of `curve_id`s. The client resolves scope
+(study / experiment / antigen) → `curve_id`s against `curve_lookup` before
+calling; the worker fits exactly what it is handed.
+
 ```bash
 curl -X POST http://localhost:8000/jobs \
   -H "Content-Type: application/json" \
   -H "X-API-Key: $API_KEY" \
   -d '{
-    "project_id": 17,
-    "study": "INCEN_IN_QIV1",
-    "experiment": "FcgR2a",
-    "antigen": "B_Phuket_HA",
-    "scope": "antigen",
+    "curve_ids": [9057, 9058, 9101, 9102, 9145, 9146],
+    "multiplate_group_ids": ["a1b2…", "a1b2…", "c3d4…", "c3d4…", "e5f6…", "e5f6…"],
     "script_type": "frequentist"
   }'
 ```
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `project_id` | int | **yes** | — | Workspace/project ID |
-| `study` | string | **yes** | — | Study accession |
-| `experiment` | string | no | null | Required if scope is `experiment` or `antigen` |
-| `antigen` | string | no | null | Required if scope is `antigen` |
-| `source` | string | no | null | Standard source filter |
-| `scope` | string | no | `study` | `study`, `experiment`, or `antigen` |
+| `curve_ids` | list[int] | **yes** | — | The batch of `curve_lookup` ids to fit (≥ 1) |
+| `multiplate_group_ids` | list[str] | no | null | Parallel to `curve_ids` (same order). If sent, length must equal `curve_ids`. Integrity check only — the `*_for_fit` views also carry the grouping |
 | `script_type` | string | no | `bayesian` | **`bayesian` or `frequentist`** — selects the engine |
 | `params` | dict | no | `{}` | Passthrough → each key becomes a `--key value` CLI arg |
 | `cdan_cv_threshold` | float | no | `20.0` | CV% gate (auto-merged into params as `cdan_cv`) |
 
+`multiplate_group_ids` is optional belt-and-suspenders: the worker can group
+purely from the view, but when the array is supplied it asserts the app's
+intended grouping matches the view's (a cheap integrity check). Send only
+`curve_ids` if you prefer.
+
 The `params` passthrough is how you tune the engine without any API change, e.g.:
 - `{"models": "logistic4,gompertz4"}` — restrict the model set
 - `{"chains": "4", "warmup": "1000", "sampling": "1000"}` — Bayesian Stan settings
+- `{"blank_option": "subtracted", "seed": "17", "adapt_delta": "0.95"}`
 
 ### GET /jobs/{job_id} — Poll Status
 
@@ -131,8 +144,12 @@ curl -H "X-API-Key: $API_KEY" http://localhost:8000/jobs/{job_id}
 ### GET /jobs — List Jobs
 
 ```bash
-curl -H "X-API-Key: $API_KEY" "http://localhost:8000/jobs?study=INCEN_IN_QIV1&status=running"
+curl -H "X-API-Key: $API_KEY" "http://localhost:8000/jobs?status=running&script_type=frequentist"
 ```
+
+> Jobs are opaque `curve_id` batches and carry no scope descriptor, so listing
+> filters on `status` and `script_type` only (study/experiment/antigen filters
+> no longer exist).
 
 ### DELETE /jobs/{job_id} — Cancel a Job
 
@@ -190,9 +207,9 @@ SCRIPT_REGISTRY = {
 ```
 
 `method_flag` is passed to the worker as `--method`; use `None` for a script that
-doesn't take one. To add a script: write it (accept `--study`, `--job_id`,
-`--progress_dir`, …; write `{progress_dir}/progress_{job_id}.json` with
-`total_combos`/`completed_combos`; exit 0 on success), add one line to
+doesn't take one. To add a script: write it (accept `--curve_ids` (comma-joined),
+`--job_id`, `--progress_dir`, …; write `{progress_dir}/progress_{job_id}.json`
+with `total_combos`/`completed_combos`; exit 0 on success), add one line to
 `SCRIPT_REGISTRY`, `COPY` it in the worker Dockerfile, and submit with that
 `script_type`.
 
@@ -220,17 +237,25 @@ Pin curveR to a release/commit in `worker.Dockerfile` for reproducible builds.
 
 ## Data Sources & Masking
 
-The worker reads input from **masked-aware views**, not the base tables:
-`standard_unmasked`, `sample_unmasked`, `blank_unmasked`, `header_unmasked`,
-`curve_lookup_unmasked` (backing `xmap_standard/sample/buffer/header` and
-`curve_lookup`). Each base table carries `masked boolean` + `mask_reason text`;
-the views drop those columns and return only `WHERE masked = false`, so points or
-whole plates flagged bad in the lab are excluded from fitting while the rows are
-**kept and flagged** (not deleted). The masking rule lives entirely in the view
-definitions — the worker needs no masking logic. Results are written to
-`madi_results.calib_*` (a `method` column distinguishes `bayesian`/`frequentist`).
-See `DEPLOYMENT.md` §8 for the full table/view map and the authoritative column
-list (`db_schema.csv`).
+The worker reads its input from the **fit-delivery views**
+`madi_results.standard_for_fit`, `blank_for_fit`, and `sample_for_fit`, filtered
+by `curve_id = ANY(batch)`. These views do the work the worker used to do in R:
+they attach `curve_id` and `multiplate_group_id` to every row, bake in the
+standard-source grain (so a blank shared by N standard sources arrives as N rows,
+one per `curve_id`), and carry `antigen`, `feature`, `source`, `mfi`, `masked`,
+and `mask_reason`. The worker groups the delivered rows by `multiplate_group_id`
+and fits each group — no NK slicing, curve_id resolution, or header joins remain
+in R.
+
+The `*_for_fit` views build on the **masked-aware** layer: each base `xmap_*`
+table carries `masked boolean` + `mask_reason text`, and masked *sample* rows are
+excluded while masked *standard/blank* rows are **kept and flagged** (`masked`
+travels through to the worker, which sets each row's `included` flag from it —
+masked points are persisted but never handed to the fitter). The masking rule
+lives entirely in the view/DB definitions — the worker needs no masking logic.
+Results are written to `madi_results.calib_*` (a `method` column distinguishes
+`bayesian`/`frequentist`). See `DEPLOYMENT.md` §8 for the full table/view map and
+the authoritative column list (`db_schema.csv`).
 
 ## Deployment
 

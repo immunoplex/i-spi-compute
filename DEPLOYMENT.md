@@ -119,15 +119,15 @@ uses `dev-key-immunoplex` — **never rely on this in production.**
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `project_id` | int | yes | Workspace/project id (same study name can exist in multiple workspaces) |
-| `study` | str | yes | Study accession |
-| `experiment` | str | if `scope` ∈ {experiment, antigen} | Experiment accession |
-| `antigen` | str | if `scope` = antigen | Antigen name |
-| `source` | str | no | Standard-source filter |
-| `scope` | str | no (default `study`) | `study` \| `experiment` \| `antigen` |
+| `curve_ids` | list[int] | yes | The batch of `curve_lookup` ids to fit (≥ 1) |
+| `multiplate_group_ids` | list[str] | no | Parallel to `curve_ids` (same order); integrity check only. If present, length must equal `curve_ids` |
 | `script_type` | str | no (default `bayesian`) | **`bayesian` \| `frequentist`** — selects the fitting engine |
 | `params` | dict | no | Passthrough → each key becomes `--key value` on the worker CLI |
-| `cdan_cv_threshold` | float | no (default `20.0`) | Shorthand; merged into `params.cdan_cv` for bayesian |
+| `cdan_cv_threshold` | float | no (default `20.0`) | Shorthand; merged into `params.cdan_cv` |
+
+> The client resolves *scope* (study / experiment / antigen) → `curve_id`s against
+> `curve_lookup` and submits the batch. The API and worker no longer accept or
+> resolve `project_id` / `study` / `experiment` / `antigen` / `source` / `scope`.
 
 ### 4.3 How `script_type` and `params` reach the engine
 
@@ -159,18 +159,15 @@ supplies the common set; `params` supplies the rest.
 
 | Flag | Default | Notes |
 | --- | --- | --- |
-| `--study` | `""` | required |
-| `--scope` | `study` | `study`\|`experiment`\|`antigen` |
-| `--experiment` | `""` | required for experiment/antigen scope |
-| `--antigen` | `""` | required for antigen scope |
-| `--source` | `""` | optional standard-source filter |
-| `--project_id` | `NA` | required |
+| `--curve_ids` | `""` | **required** — comma-joined integer batch, e.g. `9057,9058,9101` |
+| `--multiplate_group_ids` | `""` | optional — comma-joined, parallel to `--curve_ids`; integrity check only |
 | `--cdan_cv` | `20` | CV%% gate → `pcov_threshold` |
 | `--job_id` | `local` | progress file + Redis key suffix |
 | `--progress_dir` | tempdir | where `progress_<job_id>.json` is written |
 | `--output_dir` | tempdir | **legacy/ignored** — results go to the DB |
 | `--method` | `bayesian` | `bayesian`\|`frequentist` |
-| `--models` | `""` | CSV; empty → engine default `logistic4,logistic5,gompertz4` |
+| `--models` | `""` | CSV; empty → engine default `logistic5,loglogistic5,logistic4,loglogistic4,gompertz4` |
+| `--blank_option` | `ignored` | `ignored`\|`included`\|`subtracted`\|`subtracted_3x`\|`subtracted_10x` |
 | `--chains` / `--warmup` / `--sampling` | `4` / `1000` / `1000` | bayesian Stan sampling |
 | `--adapt_delta` | `0.9` | bayesian |
 | `--seed` | `""` | optional |
@@ -183,9 +180,10 @@ search directory.
 
 **Progress file:** the worker writes `progress_<job_id>.json` to `--progress_dir`
 with keys `job_id, total_combos, completed_combos, percentage, status,
-current_experiment, current_group, updated_at`. The supervisor polls this every
-`PROGRESS_POLL_INTERVAL` (5 s) and mirrors it into the Redis job hash, adding
-`elapsed_minutes`, `eta_minutes`, `eta_display`, `speed_seconds_per_combo`.
+current_group, updated_at` (units are curves; `total_combos` == batch size). The
+supervisor polls this every `PROGRESS_POLL_INTERVAL` (5 s) and mirrors it into the
+Redis job hash, adding `elapsed_minutes`, `eta_minutes`, `eta_display`,
+`speed_seconds_per_combo`.
 
 ---
 
@@ -278,10 +276,14 @@ but it caches; rebuilds that only change scripts are fast.
 `calib_schema_v1.sql`. It is **non-destructive** — it creates only the new
 `calib_*` tables and touches nothing in the legacy `bayes_*` tables.
 
-**Also required before first run:** the `*_unmasked` input views (see below),
-since the worker reads them rather than the base tables. These are **already
-deployed** on `mlr-c3d7-db` (verified 2026-07-24) along with `masked`/
-`mask_reason` columns on the base `xmap_*` and `curve_lookup` tables.
+**Also required before first run:** the `*_for_fit` input views
+(`standard_for_fit`, `blank_for_fit`, `sample_for_fit`) and the
+`curve_lookup.multiplate_group_id` column (a trigger-maintained hash used for
+grouping) must exist, since the worker reads the views and groups on that column.
+The underlying `*_unmasked` views and the `masked`/`mask_reason` columns on the
+base `xmap_*` / `curve_lookup` tables are **already deployed** on `mlr-c3d7-db`
+(verified 2026-07-24); confirm the `*_for_fit` views and `multiplate_group_id`
+are deployed there too before the first run.
 
 **Result tables written by the worker** (`method` column distinguishes
 `bayesian`/`frequentist`; writes are idempotent — delete-by-`(curve_id, method)`
@@ -289,39 +291,31 @@ then insert):
 `calib_run`, `calib_fit`, `calib_param`, `calib_gate`, `calib_grid`,
 `calib_samples`, `calib_diagnostics`, `calib_loo` (bayesian only).
 
-**Input data — read through `*_unmasked` views (masking):** the worker does not
-read the base `xmap_*` / `curve_lookup` tables directly. It reads a set of
-**masked-aware views** that exclude points and plates flagged as bad in the lab
-("masking" — the excluded rows are kept and flagged, not deleted; the views
-filter them out so downstream fitting never sees them):
+**Input data — read through the `*_for_fit` views:** the worker reads its batch
+from three **fit-delivery views**, filtered by `curve_id = ANY(batch)`. These
+sit on top of the masked-aware `*_unmasked` layer and additionally attach
+`curve_id` + `multiplate_group_id` and bake in the standard-source grain:
 
-| View | Backs (base table) | Read by |
+| View | Read by | Delivers |
 | --- | --- | --- |
-| `madi_results.standard_unmasked` | `xmap_standard` | `fetch_standards`, `discover_combos` |
-| `madi_results.sample_unmasked` | `xmap_sample` | `fetch_samples` |
-| `madi_results.blank_unmasked` | `xmap_buffer` | `fetch_blanks` |
-| `madi_results.header_unmasked` | `xmap_header` | all fetchers (join on plate) |
-| `madi_results.curve_lookup_unmasked` | `curve_lookup` | `curve_id` resolution |
-| `madi_results.control_unmasked` | `xmap_control` | (not read by this worker; exists for completeness) |
+| `madi_results.standard_for_fit` | `fetch_std_for_fit` | 1 row per standard well; `curve_id`, `multiplate_group_id`, `antigen`, `feature`, `source`, `mfi`, `masked`, `mask_reason`, + fit/persist columns |
+| `madi_results.blank_for_fit` | `fetch_blk_for_fit` | 1 row per (blank well × standard-source curve) — the 1-to-many grain |
+| `madi_results.sample_for_fit` | `fetch_smp_for_fit` | unmasked sample rows, `curve_id`-tagged |
 
-Each base table carries `masked boolean` + `mask_reason text`; each view **omits
-those two columns** and returns only `WHERE masked = false`. Verified live: every
-view has row-parity with its base's unmasked rows (e.g. `standard_unmasked` =
-310,034 rows = `xmap_standard WHERE masked=false`).
+The worker **groups the delivered rows by `multiplate_group_id`** (a persisted,
+trigger-maintained column on `curve_lookup`: a deterministic hash over the natural
+key minus `plate`/`plateid`, with `source` **included**) and fits one multiplate
+unit per group. It performs no NK slicing, curve_id resolution, or header joins.
 
-The masking rule (a point excluded if its own flag is set **or** its plate is
-masked) lives in these view definitions — a single source of truth, so the worker
-needs no masking logic and no rebuild when masking rules change. The worker still
-adds one thing a view can't: a viability check is expected (skip a curve left with
-too few points after masking) — see the worker's per-group guard.
+The masking contract is unchanged and lives in the DB: masked *sample* rows are
+excluded; masked *standard/blank* rows are **kept and flagged** (`masked` +
+`mask_reason` travel to the worker, which sets each row's `included` flag and
+persists masked points but never fits them).
 
-**`curve_lookup` (read-only contract):** the worker **never writes** the curve
-map. It resolves `curve_id` by joining `curve_lookup_unmasked` on the natural key.
-Standards match on the full 10-column NK; **samples match on the NK minus
-`source`** (patient wells carry no standard source) — load-bearing, do not
-"simplify" back to the full key. Unresolved rows keep `curve_id = NA` and are
-surfaced (standards error; samples/blanks are dropped with a logged count) — never
-invented.
+The older `*_unmasked` views (`standard_unmasked`, `sample_unmasked`,
+`blank_unmasked`, `header_unmasked`, `curve_lookup_unmasked`, `control_unmasked`)
+remain in the DB and back the `*_for_fit` views, but the worker no longer reads
+them directly.
 
 **Model set:** when a job supplies no `--models`, the worker defaults to the full
 five-model curveRcore set (`logistic5`, `loglogistic5`, `logistic4`,
@@ -333,9 +327,10 @@ so the worker and the settings table agree.
 retired after read-side cutover.
 
 **Database privileges the worker needs:**
-- `SELECT` on the input views `madi_results.{standard,sample,blank,header,curve_lookup}_unmasked`
-  (and on the base tables they wrap, as required by the view).
+- `SELECT` on the fit-delivery views `madi_results.{standard,blank,sample}_for_fit`
+  (and on the `*_unmasked` views / base tables they wrap, as required by the views).
 - `SELECT` on `madi_results.antigen_feature_settings` (standard-curve concentration + model list).
+- `SELECT` on `madi_results.curve_lookup` (read-only; for the `multiplate_group_id` grouping column).
 - `INSERT`, `DELETE`, `SELECT` on all `madi_results.calib_*` tables.
 
 ---
@@ -455,11 +450,11 @@ Redis `--requirepass`, the API, and the worker — or it protects nothing.
    limit, and `<WORKER_REPLICAS>`.
 7. **Smoke test through the real queue:**
    - `GET /health` → `{status: ok, redis: connected}`.
-   - `POST /jobs` with `script_type: "frequentist"` on a small antigen scope
-     (fast, no Stan) → poll `GET /jobs/{id}` to `completed`; confirm `calib_*`
-     rows for that curve.
-   - `POST /jobs` with `script_type: "bayesian"` → confirm completion and
-     `calib_loo` rows.
+   - `POST /jobs` with `script_type: "frequentist"` and a small `curve_ids`
+     batch (fast, no Stan) → poll `GET /jobs/{id}` to `completed`; confirm
+     `calib_*` rows for those `curve_id`s.
+   - `POST /jobs` with `script_type: "bayesian"` on the same batch → confirm
+     completion and `calib_loo` rows.
 8. **Validate** against legacy with the parity check before switching readers.
 9. **Cut over the read side** (i-SPI) from `bayes_*` to `calib_*`.
 

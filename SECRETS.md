@@ -125,7 +125,7 @@ docker compose up -d
    ```bash
    curl -X POST http://localhost:8000/jobs \
      -H "X-API-Key: <your API_KEY>" -H "Content-Type: application/json" \
-     -d '{"project_id":17,"study":"<STUDY>","experiment":"<EXP>","antigen":"<ANTIGEN>","scope":"antigen","script_type":"frequentist"}'
+     -d '{"curve_ids":[<CURVE_ID>,<CURVE_ID>],"script_type":"frequentist"}'
    # then poll: curl -H "X-API-Key: <your API_KEY>" http://localhost:8000/jobs/<job_id>
    ```
 
