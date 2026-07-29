@@ -5,6 +5,14 @@ on:
     paths:
       - 'api/**'
       - '.github/workflows/build-api.yml'
+    # Version tags produce a semver-tagged image (see the metadata step below).
+    # Path filters are NOT evaluated for tag pushes, so a `vX.Y.Z` tag always
+    # builds regardless of what its commit touched. The branches filter must stay
+    # or branch pushes would stop triggering once a tags filter is present.
+    # NOTE: api and worker share this repo, so one `vX.Y.Z` repo tag fires BOTH
+    # build-api.yml and build-worker.yml — you get matching-versioned images.
+    tags:
+      - 'v*'
 
 env:
   REGISTRY: ghcr.io
@@ -41,6 +49,15 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Branch pushes -> :main (unchanged). Tag vX.Y.Z -> :X.Y.Z and :X.Y.
+          # latest=false: don't auto-move a :latest tag (preprod pins explicit
+          # versions in the manifest). Flip to latest=auto if you want :latest.
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          flavor: |
+            latest=false
 
       - name: Build and push Docker image
         id: push
