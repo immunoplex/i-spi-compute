@@ -5,11 +5,26 @@ on:
     paths:
       - 'worker/**'
       - '.github/workflows/build-worker.yml'
+    # Version tags produce a semver-tagged image (see the metadata step below).
+    # Path filters are NOT evaluated for tag pushes, so a `vX.Y.Z` tag always
+    # builds regardless of what its commit touched. The branches filter must stay
+    # or branch pushes would stop triggering once a tags filter is present.
+    tags:
+      - 'v*'
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/i-spi-compute-worker
-  CURVER_REF: v0.3.0          # <-- curveR packages ref/tag to install; bump to rebuild
+  # Per-package curveR pins (passed as --build-arg). The load-bearing trio is
+  # pinned to v0.4.0 release tags for reproducibility; curveRweights tracks main.
+  # PREREQUISITE: these tags must exist on the respective repos before this
+  # builds — curveRcore v0.4.0 (done), curveRbayes v0.4.0, and curveRfreq v0.4.0
+  # (tag its current main in lockstep). Set any to 'main' to track a branch
+  # instead of a tag.
+  CURVERCORE_REF: v0.4.0
+  CURVERFREQ_REF: v0.4.0
+  CURVERBAYES_REF: v0.4.0
+  CURVERWEIGHTS_REF: main
 
 jobs:
   build-and-push:
@@ -43,6 +58,15 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Branch pushes -> :main (unchanged). Tag vX.Y.Z -> :X.Y.Z and :X.Y.
+          # latest=false: don't auto-move a :latest tag (preprod pins explicit
+          # versions in the manifest). Flip to latest=auto if you want :latest.
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          flavor: |
+            latest=false
 
       - name: Build and push Docker image
         id: push
@@ -55,7 +79,10 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64
           build-args: |
-            CURVER_REF=${{ env.CURVER_REF }}
+            CURVERCORE_REF=${{ env.CURVERCORE_REF }}
+            CURVERFREQ_REF=${{ env.CURVERFREQ_REF }}
+            CURVERBAYES_REF=${{ env.CURVERBAYES_REF }}
+            CURVERWEIGHTS_REF=${{ env.CURVERWEIGHTS_REF }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

@@ -51,36 +51,44 @@ RUN mkdir -p /opt/cmdstan \
 ENV CMDSTAN=/opt/cmdstan/current
 
 # ── curveR ecosystem ─────────────────────────────────────────────────────────
-# Install the packages EXPLICITLY in dependency order (not just the meta-package,
+# Install the packages EXPLICITLY in dependency order (not the meta-package,
 # which treats curveRbayes/curveRweights as optional and can leave them out).
 # Installed after CmdStan so curveRbayes' Stan build succeeds.
-# curveRcore is pinned to a released tag so a version bump forces a clean
-# reinstall (the ARG value is part of this layer's cache key). The other curveR
-# packages track their default branch — they have no v0.3.0 tag.
-ARG CURVER_REF=main
-# Pinned: curveRcore at a released tag (cache-busts on CURVER_REF change).
-RUN R -e "remotes::install_github('immunoplex/curveRcore@${CURVER_REF}', upgrade='never')"
-# Unpinned: the rest track main. Installed AFTER curveRcore so they build
-# against it. (curveRbayes compiles Stan; keep it after CmdStan as before.)
-# Fitters from main, FORCED to rebuild against the curveRcore just installed.
-#    force=TRUE reinstalls even if the version string is unchanged (main is still
-#    0.2.0), so they are recompiled against the pinned curveRcore rather than
-#    served from the buildx cache. CURVER_REF in the command text ties this
-#    layer's cache key to the pin, so bumping the tag re-runs this too.
-RUN R -e "message('rebuilding fitters against curveRcore ', packageVersion('curveRcore'), ' (ref ${CURVER_REF})'); \
-          remotes::install_github(c( \
-            'immunoplex/curveRfreq', \
-            'immunoplex/curveRbayes', \
-            'immunoplex/curveRweights'), upgrade='never')"
+#
+# Each package has its OWN ref build-arg so it can be pinned independently. The
+# load-bearing trio (curveRcore / curveRfreq / curveRbayes) is pinned to release
+# tags by CI (see build-worker.yml) for reproducible builds; curveRweights
+# tracks main (it is optional and is NOT in the verify list below). Defaults
+# here are 'main' so a bare `docker build` still works; CI overrides via
+# --build-arg.
+#
+# Each ref is interpolated into its RUN command text, so changing any single ref
+# cache-busts ONLY that layer (and the layers after it). force=TRUE additionally
+# guarantees the fitters are recompiled against the curveRcore just installed,
+# even when a DESCRIPTION Version string is unchanged.
+ARG CURVERCORE_REF=main
+ARG CURVERFREQ_REF=main
+ARG CURVERBAYES_REF=main
+ARG CURVERWEIGHTS_REF=main
 
-#                        'immunoplex/curveRweights'), upgrade='never', force=TRUE)"
+# curveRcore first — the fitters build against it.
+RUN R -e "remotes::install_github('immunoplex/curveRcore@${CURVERCORE_REF}', upgrade='never', force=TRUE)"
+
+# Fitters, each pinned, FORCED to rebuild against the curveRcore just installed.
+# curveRbayes compiles Stan; it stays after CmdStan (installed above).
+RUN R -e "message('installing fitters against curveRcore ', packageVersion('curveRcore')); \
+          remotes::install_github(c( \
+            'immunoplex/curveRfreq@${CURVERFREQ_REF}', \
+            'immunoplex/curveRbayes@${CURVERBAYES_REF}', \
+            'immunoplex/curveRweights@${CURVERWEIGHTS_REF}'), upgrade='never', force=TRUE)"
 
 # Hard verify: fail the BUILD (loudly) if any required package can't load, so a
 # silent partial install can never reach runtime again.
 RUN R -e "pkgs <- c('curveRcore','curveRfreq','curveRbayes'); \
           ok <- vapply(pkgs, requireNamespace, logical(1), quietly=TRUE); \
           if (!all(ok)) { cat('MISSING:', paste(pkgs[!ok], collapse=', '), '\n'); quit(status=1) }; \
-          cat('curveR packages OK:', paste(pkgs, collapse=', '), '\n')"
+          for (p in pkgs) cat(sprintf('  %s %s\n', p, as.character(packageVersion(p)))); \
+          cat('curveR packages OK\n')"
 
 # ── Precompile curveRbayes Stan models into the image ────────────────────────
 # Bakes compiled model executables into a layer so containers start instantly

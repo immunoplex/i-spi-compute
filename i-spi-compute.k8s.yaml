@@ -163,8 +163,8 @@ spec:
         kubernetes.io/arch: amd64   # Stan models are precompiled for amd64
       containers:
         - name: i-spi-compute-worker
-          image: ghcr.io/immunoplex/i-spi-compute-worker:main
-          imagePullPolicy: Always
+          image: ghcr.io/immunoplex/i-spi-compute-worker:0.4.0   # <-- versioned; bump per release. (was :main)
+          imagePullPolicy: IfNotPresent   # immutable version tag → no need to re-pull every restart
           env:
             - { name: REDIS_HOST, value: i-spi-compute-redis }   # <-- new dedicated Redis
             - { name: REDIS_PORT, value: "6379" }
