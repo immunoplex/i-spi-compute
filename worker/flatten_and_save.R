@@ -19,12 +19,15 @@
 #   * LLOQ/ULOQ + shape-LOQ read from cr$ensemble[[best]]$eligibility.
 #   * LOO comparison/weights read from mp$meta$selection; weights aligned to
 #     ensemble model order.
-#   * Inflection point derived from the grid (point estimate only).
+#   * Inflection point is the exact closed-form value from
+#     curveRcore::compute_inflection(best_model, params) (point estimate);
+#     .infl_from_grid() is a steepest-point fallback. inflect_x_lower/upper
+#     (posterior CI) remain NA until curveRbayes emits a posterior inflection CI.
 #
 # Two OPTIONAL one-line curveRbayes changes would enrich output (not required):
 #   (a) persist loo_results  -> populates calib_loo pareto-k counts
 #   (b) keep names on loo_weights -> removes reliance on positional alignment
-#   Plus a curveRcore compute_inflection() would fill the inflection CI columns.
+#   A posterior inflection CI in curveRbayes would fill inflect_x_lower/upper.
 # =============================================================================
 
 suppressWarnings(suppressMessages({ library(DBI); library(RPostgres) }))
@@ -223,11 +226,19 @@ flatten_result <- function(mp, job_id, method = NULL) {
 
     # diagnostics (one row per curve). LLOQ/ULOQ + shape-LOQ live on the BEST
     # model's per-curve eligibility (not $diagnostics, which this curveR build
-    # leaves unset). Inflection is derived from the grid as a point estimate;
-    # curveR does not yet emit a posterior inflection CI (see note at EOF).
+    # leaves unset). Inflection is the exact closed-form value from the fitted
+    # best-model parameters (curveRcore::compute_inflection); it falls back to the
+    # steepest grid point only if parameters are unavailable. The old
+    # min|d2y/dx2| grid search snapped to the flat lower asymptote
+    # (~log10(grid_min_conc) = -4) and MUST NOT be reinstated.
     dl   <- cr$detection_limits %||% list()
     eb   <- cr$ensemble[[best]]$eligibility %||% .get_assessment(cr, best) %||% list()
-    infl <- .infl_from_grid(cr$grid)
+    infl <- tryCatch(
+      curveRcore::compute_inflection(best, cr$ensemble[[best]]$parameters),
+      error = function(e) NULL
+    )
+    if (is.null(infl) || !is.finite(infl$x %||% NA_real_))
+      infl <- .infl_from_grid(cr$grid)
     diag_rows[[length(diag_rows)+1L]] <- data.frame(
       curve_id = cid_i, method = method, model_name = best,
       lloq_log10 = .na(eb$lloq), uloq_log10 = .na(eb$uloq),
@@ -370,17 +381,48 @@ flatten_calib_points <- function(pp, job_id, method, response_var = "mfi",
 .int   <- function(x) if (is.null(x)||length(x)==0) NA_integer_ else as.integer(x)[1]
 .pow10 <- function(x) { v <- .na(x); if (is.na(v)) NA_real_ else 10^v }
 
-# inflection point estimate from the best-model grid: the steepest point of a
-# monotone sigmoid is where curvature (d2y_dx2) crosses zero, approximated by
-# the grid row of minimum |d2y_dx2|. Point estimate only; CI needs the posterior.
+# Inflection (fallback only; prefer curveRcore::compute_inflection). The
+# inflection of a monotone sigmoid is its STEEPEST point: argmax |dy/dx|. This is
+# interior and unique, so — unlike the old min|d2y/dx2| rule — it is immune to the
+# flat asymptotic tails of a wide grid (which have d2y/dx2 ≈ 0 and would otherwise
+# capture the search at the grid's left edge, ~log10(grid_min_conc)). Point
+# estimate only; CI needs the posterior.
 .infl_from_grid <- function(gd) {
   if (!is.data.frame(gd) ||
-      !all(c("d2y_dx2","log10_concentration","predicted_response") %in% names(gd)))
+      !all(c("log10_concentration","predicted_response") %in% names(gd)))
     return(list(x = NA_real_, y = NA_real_))
-  ok <- is.finite(gd$d2y_dx2) & is.finite(gd$log10_concentration)
-  if (!any(ok)) return(list(x = NA_real_, y = NA_real_))
-  i <- which(ok)[which.min(abs(gd$d2y_dx2[ok]))]
-  list(x = gd$log10_concentration[i], y = gd$predicted_response[i])
+  x <- gd$log10_concentration; y <- gd$predicted_response
+  ok <- is.finite(x) & is.finite(y)
+  x <- x[ok]; y <- y[ok]
+  n <- length(x)
+  if (n < 3L) return(list(x = NA_real_, y = NA_real_))
+
+  # First derivative via non-uniform central differences on interior points.
+  slope <- rep(NA_real_, n)
+  for (i in seq(2L, n - 1L)) {
+    h <- x[i + 1L] - x[i - 1L]
+    if (abs(h) > .Machine$double.eps) slope[i] <- (y[i + 1L] - y[i - 1L]) / h
+  }
+  j <- which.max(abs(slope))                 # steepest interior grid row
+  if (length(j) == 0L || !is.finite(slope[j]))
+    return(list(x = NA_real_, y = NA_real_))
+
+  # Parabolic refinement of the |slope| peak using the three points around j.
+  x_star <- x[j]
+  if (j > 1L && j < n) {
+    xi <- x[(j - 1L):(j + 1L)]; yi <- abs(slope[(j - 1L):(j + 1L)])
+    denom <- (xi[1] - xi[2]) * (xi[1] - xi[3]) * (xi[2] - xi[3])
+    if (all(is.finite(yi)) && abs(denom) > .Machine$double.eps * 1e8) {
+      A <- (xi[3]*(yi[2]-yi[1]) + xi[2]*(yi[1]-yi[3]) + xi[1]*(yi[3]-yi[2])) / denom
+      B <- (xi[3]^2*(yi[1]-yi[2]) + xi[2]^2*(yi[3]-yi[1]) + xi[1]^2*(yi[2]-yi[3])) / denom
+      if (abs(A) > .Machine$double.eps) {
+        xv <- -B / (2 * A)
+        if (is.finite(xv) && xv >= min(xi) && xv <= max(xi)) x_star <- xv
+      }
+    }
+  }
+  y_star <- stats::approx(x, y, xout = x_star, rule = 2)$y
+  list(x = as.numeric(x_star), y = as.numeric(y_star))
 }
 
 # pooled LOO -> per-model table (bayes). Location confirmed: mp$meta$selection

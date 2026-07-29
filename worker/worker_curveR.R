@@ -81,7 +81,8 @@ parse_args <- function(argv = commandArgs(trailingOnly = TRUE)) {
             progress_dir = tempdir(), output_dir = tempdir(),
             method = "bayesian", models = "", blank_option = "ignored",
             chains = "4", warmup = "1000", sampling = "1000",
-            adapt_delta = "0.9", seed = "")
+            adapt_delta = "0.9", seed = "",
+            include_measurement_error = "true")
   i <- 1L
   while (i <= length(argv)) {
     key <- sub("^--", "", argv[i])
@@ -240,6 +241,10 @@ main <- function() {
   models   <- build_models(P)
   pcov_th  <- suppressWarnings(as.numeric(P$cdan_cv)) %||% 20
   seed     <- if (nzchar(P$seed)) as.integer(P$seed) else NULL
+  # Precision variance definition (bayes only). Default TRUE (measurement/CDAN);
+  # only an explicit "false" (any casing) turns it off (curve-only). Applied to
+  # BOTH the grid and the per-sample pcov inside fit_calibration_bayes().
+  inc_me   <- !identical(tolower(trimws(P$include_measurement_error %||% "true")), "false")
 
   # Parse the curve_id batch and (optional) declared group ids.
   batch <- suppressWarnings(as.integer(strsplit(trimws(P$curve_ids), "\\s*,\\s*")[[1]]))
@@ -381,7 +386,8 @@ main <- function() {
           std_curve_conc = sc, cv_x_max = 150, pcov_threshold = pcov_th,
           chains = as.integer(P$chains), warmup = as.integer(P$warmup),
           sampling = as.integer(P$sampling), adapt_delta = as.numeric(P$adapt_delta),
-          seed = seed, run_loo = TRUE, verbose = FALSE)
+          seed = seed, include_measurement_error = inc_me,
+          run_loo = TRUE, verbose = FALSE)
       } else {
         mp <- curveRfreq::fit_calibration_freq_multiplate(
           standards = std_fit, blanks = blk_fit, samples = smp_in,
