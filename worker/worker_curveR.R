@@ -84,12 +84,18 @@ parse_args <- function(argv = commandArgs(trailingOnly = TRUE)) {
             adapt_delta = "0.9", seed = "",
             include_measurement_error = "true")
   i <- 1L
+  supplied <- character(0)
   while (i <= length(argv)) {
     key <- sub("^--", "", argv[i])
     val <- if (i + 1L <= length(argv) && !grepl("^--", argv[i + 1L])) argv[i + 1L] else ""
     p[[key]] <- val
+    supplied <- c(supplied, key)
     i <- i + (if (nzchar(val)) 2L else 1L)
   }
+  # Record which keys the CALLER actually passed, so the worker can let an
+  # explicit CLI value override a resolved cascade default (and otherwise fall
+  # back to the cascade). attr avoids changing p's shape for existing readers.
+  attr(p, "supplied") <- unique(supplied)
   p
 }
 
@@ -191,6 +197,59 @@ fetch_blank_options <- function(conn, std) {
 }
 
 
+# ── UNIFIED SETTINGS CASCADE (calib_settings via resolve_settings_batch) ──────
+# One round-trip per job: resolve every param for every curve_id in the batch,
+# then index per multiplate group (settings are uniform within a group, so any
+# member curve_id yields the group's values). Replaces the hardcoded study_params
+# fixture and the antigen_feature_settings reads. Values come back typed-as-text;
+# coerce at the point of use. IN-list binding (RPostgres won't bind = ANY).
+fetch_resolved_settings <- function(conn, curve_ids) {
+  df <- tryCatch(DBI::dbGetQuery(conn, sprintf(
+    "SELECT curve_id, param_name, param_data_type, value_text
+       FROM madi_results.resolve_settings_batch(ARRAY[%s]::bigint[])", .in_ids(curve_ids))),
+    error = function(e) { message("  (settings resolve failed: ", conditionMessage(e), ")"); data.frame() })
+  df
+}
+
+# Build curve_id -> (param_name -> value_text) and a group-representative index.
+# `settings_for(cid, param, default)` returns the resolved value for the group
+# that `cid` belongs to, or `default` if unresolved (defensive: __system__ seeds
+# everything, so a miss should not happen).
+make_settings_accessor <- function(resolved) {
+  if (is.null(resolved) || !nrow(resolved))
+    return(function(cid, param, default = NULL) default)
+  by_cid <- split(resolved, as.character(resolved$curve_id))
+  function(cid, param, default = NULL) {
+    r <- by_cid[[as.character(cid)]]
+    if (is.null(r)) return(default)
+    hit <- r[r$param_name == param, , drop = FALSE]
+    if (!nrow(hit)) return(default)
+    v <- hit$value_text[1]
+    if (is.null(v) || is.na(v)) default else v
+  }
+}
+# Typed coercions from the text the resolver returns.
+.as_bool <- function(x, default = NA) {
+  if (is.null(x) || is.na(x)) return(default)
+  tolower(trimws(x)) %in% c("true","t","1","yes")
+}
+.as_num <- function(x, default = NA_real_) {
+  v <- suppressWarnings(as.numeric(x)); if (is.na(v)) default else v
+}
+
+# CLI-over-cascade precedence: if the caller explicitly supplied `cli_key`, use
+# the CLI value; else use the resolved cascade value; else the coded default.
+# `supplied` is the attr set by parse_args. Returns raw text (coerce at use).
+make_pick <- function(P) {
+  supplied <- attr(P, "supplied") %||% character(0)
+  function(cli_key, cascade_val, default = NULL) {
+    if (cli_key %in% supplied && nzchar(P[[cli_key]] %||% "")) P[[cli_key]]
+    else if (!is.null(cascade_val) && !is.na(cascade_val)) cascade_val
+    else default
+  }
+}
+
+
 # ── blank-handling vocabulary ────────────────────────────────────────────────
 # Blanks are NEVER subtracted automatically. Subtraction happens only when a
 # caller explicitly asks via `blank_option`; anything unrecognised (or empty)
@@ -238,13 +297,12 @@ main <- function() {
   P <- parse_args()
   method   <- match.arg(P$method, c("bayesian", "frequentist"))
   is_bayes <- identical(method, "bayesian")
-  models   <- build_models(P)
-  pcov_th  <- suppressWarnings(as.numeric(P$cdan_cv)) %||% 20
+  pick     <- make_pick(P)           # CLI-over-cascade precedence helper
   seed     <- if (nzchar(P$seed)) as.integer(P$seed) else NULL
-  # Precision variance definition (bayes only). Default TRUE (measurement/CDAN);
-  # only an explicit "false" (any casing) turns it off (curve-only). Applied to
-  # BOTH the grid and the per-sample pcov inside fit_calibration_bayes().
-  inc_me   <- !identical(tolower(trimws(P$include_measurement_error %||% "true")), "false")
+  # NOTE: models, pcov_th, inc_me, and the study_params (is_log_response,
+  # is_log_independent, apply_prozone) and the bayes sampling knobs are now
+  # resolved PER GROUP from the settings cascade (with CLI override) inside the
+  # loop, not fixed here. Only method/seed are run-global.
 
   # Parse the curve_id batch and (optional) declared group ids.
   batch <- suppressWarnings(as.integer(strsplit(trimws(P$curve_ids), "\\s*,\\s*")[[1]]))
@@ -277,9 +335,9 @@ main <- function() {
   std$masked <- as.logical(std$masked)
   if (nrow(blk)) blk$masked <- as.logical(blk$masked)
 
-  # Per-antigen settings, keyed by antigen (constant within a group).
-  sc_map <- fetch_sc_conc(conn, std)
-  bo_map <- fetch_blank_options(conn, std)
+  # Resolve ALL settings for the batch in ONE round-trip; index per group below.
+  resolved <- fetch_resolved_settings(conn, batch)
+  sget     <- make_settings_accessor(resolved)
   run_blank_option <- .valid_blank_option(P$blank_option)
 
   # Grouping comes straight from the view.
@@ -297,9 +355,8 @@ main <- function() {
 
   total_curves <- length(batch)
   done <- 0L; failures <- 0L
-  message(sprintf("worker_curveR: method=%s models=%s n_curves=%d n_groups=%d job=%s",
-                  method, paste(models, collapse = "+"),
-                  total_curves, length(gids), P$job_id))
+  message(sprintf("worker_curveR: method=%s n_curves=%d n_groups=%d job=%s (settings: cascade, CLI overrides)",
+                  method, total_curves, length(gids), P$job_id))
   message(sprintf("worker cores: %d  (source: %s)", worker_cores,
                   if (nzchar(Sys.getenv("WORKER_CORES"))) "WORKER_CORES" else "detectCores()"))
   message(sprintf("blank handling: run default = '%s'%s", run_blank_option,
@@ -307,9 +364,6 @@ main <- function() {
                     sprintf(" (per-antigen overrides from settings.%s)",
                             Sys.getenv("WORKER_BLANK_OPTION_COL")) else ""))
   write_progress(P$progress_dir, P$job_id, total_curves, done, "running")
-
-  study_params <- list(is_log_response = TRUE, is_log_independent = TRUE,
-                       apply_prozone = TRUE)
 
   # ── fit each multiplate group ───────────────────────────────────────────
   for (gid in gids) {
@@ -321,15 +375,37 @@ main <- function() {
 
     antigen <- as.character(sg$antigen[1]); feature <- as.character(sg$feature[1])
     n_grp   <- length(unique(sg$curve_id))
+    rep_cid <- sg$curve_id[1]              # representative curve_id (settings are group-uniform)
     tag     <- sprintf("group=%s antigen=%s feature=%s n_curves=%d",
                        gid, antigen, feature, n_grp)
+
+    # ---- resolve this group's settings (cascade), with CLI override ----------
+    study_params <- list(
+      is_log_response    = .as_bool(sget(rep_cid, "is_log_response",    "true"), TRUE),
+      is_log_independent = .as_bool(sget(rep_cid, "is_log_independent", "true"), TRUE),
+      apply_prozone      = .as_bool(sget(rep_cid, "apply_prozone",      "true"), TRUE))
+    models  <- {
+      mv <- pick("models", sget(rep_cid, "model_form_list", NULL),
+                 "logistic5,loglogistic5,logistic4,loglogistic4,gompertz4")
+      trimws(strsplit(mv, ",")[[1]])       # defensive trim (store is clean, UI may not be)
+    }
+    pcov_th <- .as_num(pick("cdan_cv", sget(rep_cid, "pcov_threshold", NULL), "20"), 20)
+    inc_me  <- !identical(tolower(trimws(
+                 pick("include_measurement_error",
+                      sget(rep_cid, "include_measurement_error", NULL), "true"))), "false")
+    # bayes sampling knobs: CLI over cascade over coded default.
+    b_chains  <- as.integer(pick("chains",   sget(rep_cid, "bayes_chains",   NULL), "4"))
+    b_warmup  <- as.integer(pick("warmup",   sget(rep_cid, "bayes_warmup",   NULL), "1000"))
+    b_samp    <- as.integer(pick("sampling", sget(rep_cid, "bayes_sampling", NULL), "1000"))
+
     # standard_curve_concentration is a HARD requirement of curveRcore — it is a
     # concentration, conceptually and often type-distinct from a dilution factor,
-    # so there is NO fallback (e.g. to nominal_sample_dilution). A group whose
-    # antigen has no setting fails loudly and is surfaced, never silently fit
-    # against a substituted value.
-    sc      <- sc_map[[antigen]] %||% NA_real_
-    bo      <- .valid_blank_option(bo_map[[antigen]] %||% run_blank_option)
+    # so there is NO fallback (e.g. to nominal_sample_dilution). With the cascade
+    # __system__ default of 10000 (arbitrary units) this effectively always
+    # resolves, but the loud stop is kept as a low-cost, consistent safety net.
+    sc      <- .as_num(sget(rep_cid, "standard_curve_concentration", NULL), NA_real_)
+    bo      <- .valid_blank_option(pick("blank_option",
+                 sget(rep_cid, "blank_option", NULL), run_blank_option))
 
     res <- tryCatch({
       if (is.null(sc) || is.na(sc))
@@ -384,8 +460,8 @@ main <- function() {
           is_log_response = study_params$is_log_response,
           is_log_independent = study_params$is_log_independent,
           std_curve_conc = sc, cv_x_max = 150, pcov_threshold = pcov_th,
-          chains = as.integer(P$chains), warmup = as.integer(P$warmup),
-          sampling = as.integer(P$sampling), adapt_delta = as.numeric(P$adapt_delta),
+          chains = b_chains, warmup = b_warmup,
+          sampling = b_samp, adapt_delta = as.numeric(P$adapt_delta),
           seed = seed, include_measurement_error = inc_me,
           run_loo = TRUE, verbose = FALSE)
       } else {
