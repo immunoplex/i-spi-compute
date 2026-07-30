@@ -113,7 +113,7 @@ curl -X POST http://localhost:8000/jobs \
 | `curve_ids` | list[int] | **yes** | — | The batch of `curve_lookup` ids to fit (≥ 1) |
 | `multiplate_group_ids` | list[str] | no | null | Parallel to `curve_ids` (same order). If sent, length must equal `curve_ids`. Integrity check only — the `*_for_fit` views also carry the grouping |
 | `script_type` | string | no | `bayesian` | **`bayesian` or `frequentist`** — selects the engine |
-| `params` | dict | no | `{}` | Passthrough → each key becomes a `--key value` CLI arg |
+| `params` | dict | no | `{}` | Passthrough → each key becomes a `--key value` CLI arg; recognized keys override the settings cascade for this job (see below) |
 | `cdan_cv_threshold` | float | no | `20.0` | CV% gate (auto-merged into params as `cdan_cv`) |
 
 `multiplate_group_ids` is optional belt-and-suspenders: the worker can group
@@ -121,10 +121,22 @@ purely from the view, but when the array is supplied it asserts the app's
 intended grouping matches the view's (a cheap integrity check). Send only
 `curve_ids` if you prefer.
 
-The `params` passthrough is how you tune the engine without any API change, e.g.:
+The `params` passthrough is how you tune the engine without any API change. Every
+recognized key **overrides** that job's settings-cascade value (see below);
+omit it to inherit the cascade default:
 - `{"models": "logistic4,gompertz4"}` — restrict the model set
-- `{"chains": "4", "warmup": "1000", "sampling": "1000"}` — Bayesian Stan settings
+- `{"chains": "4", "warmup": "1000", "sampling": "3000"}` — Bayesian draws (higher `sampling` → smoother precision profile)
+- `{"include_measurement_error": "false"}` — Bayesian: curve-only precision (omit assay measurement noise)
 - `{"blank_option": "subtracted", "seed": "17", "adapt_delta": "0.95"}`
+
+**Settings come from a cascade, not the request.** Analysis settings
+(`model_form_list`, `pcov_threshold`, `standard_curve_concentration`,
+`is_log_response`, `is_log_independent`, `apply_prozone`, `blank_option`, the
+Bayesian sampling knobs, `include_measurement_error`, …) are resolved per job from
+the **settings cascade** (`madi_results.calib_settings` via
+`resolve_settings_batch`). A `params` value overrides the cascade for that one
+job; otherwise the cascade supplies the default, seeded at a `__system__` tier so
+a bare job (just `curve_ids`) fits correctly. See `DEPLOYMENT.md` §5 and §8.1.
 
 ### GET /jobs/{job_id} — Poll Status
 
@@ -256,6 +268,15 @@ lives entirely in the view/DB definitions — the worker needs no masking logic.
 Results are written to `madi_results.calib_*` (a `method` column distinguishes
 `bayesian`/`frequentist`). See `DEPLOYMENT.md` §8 for the full table/view map and
 the authoritative column list (`db_schema.csv`).
+
+**Settings via the cascade.** Analysis settings are not baked into the worker and
+are not read from a single settings table. The worker resolves them per job from
+`madi_results.calib_settings` through `resolve_settings_batch(curve_ids)` (a
+sparse, tiered key/value store: project → study → experiment → feature → antigen,
+with a `__system__` default seed). A `params`/CLI value overrides the resolved
+value for that job. Definitions and editor-render metadata live in
+`calib_settings_meta`. This replaces the earlier per-table reads and the worker's
+hardcoded log/prozone fixtures. See `DEPLOYMENT.md` §8.1.
 
 ## Deployment
 

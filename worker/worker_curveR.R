@@ -397,6 +397,7 @@ main <- function() {
     b_chains  <- as.integer(pick("chains",   sget(rep_cid, "bayes_chains",   NULL), "4"))
     b_warmup  <- as.integer(pick("warmup",   sget(rep_cid, "bayes_warmup",   NULL), "1000"))
     b_samp    <- as.integer(pick("sampling", sget(rep_cid, "bayes_sampling", NULL), "1000"))
+    b_adapt   <- .as_num(pick("adapt_delta", sget(rep_cid, "adapt_delta",    NULL), "0.9"), 0.9)
 
     # standard_curve_concentration is a HARD requirement of curveRcore — it is a
     # concentration, conceptually and often type-distinct from a dilution factor,
@@ -461,7 +462,7 @@ main <- function() {
           is_log_independent = study_params$is_log_independent,
           std_curve_conc = sc, cv_x_max = 150, pcov_threshold = pcov_th,
           chains = b_chains, warmup = b_warmup,
-          sampling = b_samp, adapt_delta = as.numeric(P$adapt_delta),
+          sampling = b_samp, adapt_delta = b_adapt,
           seed = seed, include_measurement_error = inc_me,
           run_loo = TRUE, verbose = FALSE)
       } else {

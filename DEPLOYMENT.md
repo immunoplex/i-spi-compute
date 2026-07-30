@@ -136,11 +136,14 @@ uses `dev-key-immunoplex` — **never rely on this in production.**
   `--method <method_flag>` to the worker. Both `bayesian` and `frequentist` run
   the **same** `worker_curveR.R`.
 - `params` is a generic passthrough: the supervisor emits `--<key> <value>` for
-  each entry. Unknown keys are ignored by the worker. This is the channel for
-  engine-tuning knobs **without any API change**, e.g.:
-  - `{"models": "logistic4,gompertz4"}` → `--models logistic4,gompertz4`
-  - `{"chains": "4", "warmup": "1000", "sampling": "1000"}` (bayesian Stan settings)
+  each entry. Unknown keys are ignored by the worker. Every recognized key
+  **overrides** the corresponding settings-cascade value for that job (see §5,
+  §8.1); omit a key to inherit the cascade default. Examples:
+  - `{"models": "logistic4,gompertz4"}` → `--models logistic4,gompertz4` (restrict the model set)
+  - `{"chains": "4", "warmup": "1000", "sampling": "3000"}` (bayesian draws; higher `sampling` = smoother precision profile)
+  - `{"include_measurement_error": "false"}` (bayesian: curve-only precision, omit assay noise)
   - `{"cdan_cv": 25}` (CV%% gate; also settable via `cdan_cv_threshold`)
+  - `{"blank_option": "subtracted", "seed": "17", "adapt_delta": "0.95"}`
 
 ### 4.4 Redis keys
 
@@ -157,20 +160,45 @@ uses `dev-key-immunoplex` — **never rely on this in production.**
 `worker_curveR.R` accepts these flags (defaults in parentheses). The supervisor
 supplies the common set; `params` supplies the rest.
 
-| Flag | Default | Notes |
-| --- | --- | --- |
-| `--curve_ids` | `""` | **required** — comma-joined integer batch, e.g. `9057,9058,9101` |
-| `--multiplate_group_ids` | `""` | optional — comma-joined, parallel to `--curve_ids`; integrity check only |
-| `--cdan_cv` | `20` | CV%% gate → `pcov_threshold` |
-| `--job_id` | `local` | progress file + Redis key suffix |
-| `--progress_dir` | tempdir | where `progress_<job_id>.json` is written |
-| `--output_dir` | tempdir | **legacy/ignored** — results go to the DB |
-| `--method` | `bayesian` | `bayesian`\|`frequentist` |
-| `--models` | `""` | CSV; empty → engine default `logistic5,loglogistic5,logistic4,loglogistic4,gompertz4` |
-| `--blank_option` | `ignored` | `ignored`\|`included`\|`subtracted`\|`subtracted_3x`\|`subtracted_10x` |
-| `--chains` / `--warmup` / `--sampling` | `4` / `1000` / `1000` | bayesian Stan sampling |
-| `--adapt_delta` | `0.9` | bayesian |
-| `--seed` | `""` | optional |
+> **Settings precedence (important).** As of the unified-settings cutover, the
+> worker resolves every analysis setting from the **settings cascade**
+> (`madi_results.calib_settings` via `resolve_settings_batch(curve_ids)`) rather
+> than from hardcoded fixtures or a single settings table. A CLI flag, when
+> **explicitly supplied**, OVERRIDES the resolved cascade value; when omitted,
+> the cascade value is used; and the cascade's `__system__` tier seeds a default
+> for every param, so a bare job (only `--curve_ids`) fits correctly. Precedence
+> per param: **explicit CLI flag > resolved cascade value > coded fallback.**
+> Settings are resolved once per job and are uniform within a `multiplate_group_id`
+> (they are read per group from a representative `curve_id`). See §8.1.
+
+| Flag | Default (coded fallback) | Cascade param (calib_settings) | Notes |
+| --- | --- | --- | --- |
+| `--curve_ids` | `""` | — | **required** — comma-joined integer batch, e.g. `9057,9058,9101` |
+| `--multiplate_group_ids` | `""` | — | optional — comma-joined, parallel to `--curve_ids`; integrity check only |
+| `--job_id` | `local` | — | progress file + Redis key suffix |
+| `--progress_dir` | tempdir | — | where `progress_<job_id>.json` is written |
+| `--output_dir` | tempdir | — | **legacy/ignored** — results go to the DB |
+| `--method` | `bayesian` | — | `bayesian`\|`frequentist` (run-global; not a cascade setting) |
+| `--seed` | `""` | — | optional integer (run-global) |
+| `--adapt_delta` | (cascade) | `adapt_delta` | bayesian NUTS target acceptance (0..1). Empty → cascade `adapt_delta` → `0.9`. Raise toward 0.95–0.99 if a fit reports divergences |
+| `--models` | (cascade) | `model_form_list` | CSV model set. Empty → cascade `model_form_list` → coded default `logistic5,loglogistic5,logistic4,loglogistic4,gompertz4`. Order is cosmetic (each model is scored independently) |
+| `--cdan_cv` | (cascade) | `pcov_threshold` | CV%% gate. Empty → cascade `pcov_threshold` → `20` |
+| `--blank_option` | (cascade) | `blank_option` | `ignored`\|`included`\|`subtracted`\|`subtracted_3x`\|`subtracted_10x`. Empty → cascade → `ignored` |
+| `--chains` | (cascade) | `bayes_chains` | bayesian chains. Empty → cascade `bayes_chains` → `4` |
+| `--warmup` | (cascade) | `bayes_warmup` | bayesian warmup iterations. Empty → cascade `bayes_warmup` → `1000` |
+| `--sampling` | (cascade) | `bayes_sampling` | bayesian **post-warmup draws per chain**. Empty → cascade `bayes_sampling` → `1000`. Raising this smooths the precision profile (Monte-Carlo noise ∝ 1/√draws); the client defaults to `1500` |
+| `--include_measurement_error` | (cascade) | `include_measurement_error` | bayesian precision variance definition. `true` (default) = measurement/CDAN profile (grid + per-sample pcov both include assay noise σ²(x)); `false` = curve/parameter uncertainty only. Empty → cascade → `true` |
+
+**Settings resolved ONLY from the cascade (no CLI flag; formerly hardcoded
+fixtures):**
+
+| Cascade param (calib_settings) | Default (`__system__`) | Consumed as | Notes |
+| --- | --- | --- | --- |
+| `is_log_response` | `true` | `preprocess_standards(is_log_response=)` + fitters | log-transform the response/MFI axis. Was a hardcoded `TRUE`; now resolved (a study may override it) |
+| `is_log_independent` | `true` | `preprocess_standards(is_log_independent=)` + fitters | log-transform the concentration axis. Was hardcoded `TRUE` |
+| `apply_prozone` | `true` | `preprocess_standards(apply_prozone=)` | prozone (hook-effect) correction. Was hardcoded `TRUE` |
+| `standard_curve_concentration` | `10000` | `antigen_settings=` / `std_curve_conc=` | top-standard concentration (arbitrary units at the `10000` placeholder). A per-antigen override (tier 5) supplies the real value. The worker keeps a **hard-stop** if this is unresolvable — effectively never fires now that `__system__` seeds `10000`, kept as a low-cost, consistent safety net |
+| `l_asy_min_constraint` / `l_asy_max_constraint` / `l_asy_constraint_method` | `0` / `0` / `default` | (fitter lower-asymptote constraints) | migrated from `xmap_antigen_family`; presently informational unless the fitter consumes them |
 
 **Sibling requirement (critical):** `worker_curveR.R` `source()`s
 `flatten_and_save.R` and `verify_saved.R` from its own directory at startup and
@@ -317,20 +345,58 @@ The older `*_unmasked` views (`standard_unmasked`, `sample_unmasked`,
 remain in the DB and back the `*_for_fit` views, but the worker no longer reads
 them directly.
 
-**Model set:** when a job supplies no `--models`, the worker defaults to the full
-five-model curveRcore set (`logistic5`, `loglogistic5`, `logistic4`,
-`loglogistic4`, `gompertz4`), matching `antigen_feature_settings.model_form_list`
-so the worker and the settings table agree.
+**Model set:** when a job supplies no `--models`, the worker resolves
+`model_form_list` from the settings cascade, whose `__system__` default is the
+full five-model curveRcore set (`logistic4`, `loglogistic4`, `gompertz4`,
+`logistic5`, `loglogistic5`). Model order is cosmetic — each model is scored
+independently and the best is selected.
 
 **Legacy `bayes_*`:** written by the old stanassay worker. The curveR worker does
 **not** write them. They can coexist during parallel-run/validation and be
 retired after read-side cutover.
 
+### 8.1 Settings cascade (how the worker gets its analysis settings)
+
+The worker no longer reads a single settings table or carries hardcoded fixtures.
+Every analysis setting resolves from the **cascade**:
+
+- **Store:** `madi_results.calib_settings` — a sparse key/value store. A row
+  exists only to OVERRIDE a value at a scope tier; absence = inherit. Scope key:
+  `project_id, study_accession, experiment_accession, feature, antigen`
+  (wildcards `__none__` / project `-1`). Typed (`param_data_type` +
+  integer/numeric/boolean/character value columns). `param_group` scopes the
+  domain (`calibration`, `bead_count`, `dilution_analysis`, …).
+- **Resolver:** `resolve_settings_batch(bigint[])` returns, per `curve_id`, the
+  effective `param_name → value_text` (most-specific tier wins per param).
+  `resolve_settings(project, study, experiment, feature, antigen)` is the
+  single-scope form used by the app.
+- **Definitions/rendering:** `madi_results.calib_settings_meta` (one row per
+  `param_name`: group, label, control type, choices) — consumed by the app's
+  settings editor, **not** the worker. The worker reads values only.
+- **Seed:** the `__system__` tier seeds a default for every calibration param, so
+  a job never lacks a value.
+
+The worker calls `resolve_settings_batch(curve_ids)` once per job and indexes the
+result per `multiplate_group_id` (settings are uniform within a group). CLI flags
+override resolved values when explicitly supplied (§5). The calibration params and
+their `__system__` defaults are in the §5 tables.
+
+Provenance: calibration settings were migrated from `xmap_antigen_family`
+(per-antigen: `standard_curve_concentration`, `model_form_list`, the `l_asy_*`);
+study-level settings from `xmap_study_config` (with name reconciliation —
+`is_log_mfi_axis`→`is_log_response`, `applyProzone`→`apply_prozone`; deprecated
+`mean_mfi`/`default_source` dropped). `pcov_threshold` was reset to a global `20`.
+See the `create_settings_cascade.sql` / `migrate_settings_cascade.sql` /
+`migrate_study_config_cascade.sql` migrations.
+
 **Database privileges the worker needs:**
 - `SELECT` on the fit-delivery views `madi_results.{standard,blank,sample}_for_fit`
   (and on the `*_unmasked` views / base tables they wrap, as required by the views).
-- `SELECT` on `madi_results.antigen_feature_settings` (standard-curve concentration + model list).
-- `SELECT` on `madi_results.curve_lookup` (read-only; for the `multiplate_group_id` grouping column).
+- `EXECUTE` on `madi_results.resolve_settings_batch(bigint[])` (and `SELECT` on
+  `madi_results.calib_settings` / `calib_settings_meta` if queried directly).
+  Replaces the former `SELECT` on `antigen_feature_settings`.
+- `SELECT` on `madi_results.curve_lookup` (read-only; for the `multiplate_group_id`
+  grouping column and the resolver's NK join).
 - `INSERT`, `DELETE`, `SELECT` on all `madi_results.calib_*` tables.
 
 ---
