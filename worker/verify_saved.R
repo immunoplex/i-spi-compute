@@ -299,6 +299,10 @@ verify_saved <- function(mp,
            WHERE method='%2$s' AND curve_id IN (%3$s)
          UNION SELECT 'calib_diagnostics', curve_id FROM %1$s.calib_diagnostics
            WHERE method='%2$s' AND curve_id IN (%3$s)
+         UNION SELECT 'calib_standards', curve_id FROM %1$s.calib_standards
+           WHERE method='%2$s' AND curve_id IN (%3$s)
+         UNION SELECT 'calib_blanks', curve_id FROM %1$s.calib_blanks
+           WHERE method='%2$s' AND curve_id IN (%3$s)
        ) t
        LEFT JOIN %1$s.calib_fit f
          ON f.curve_id = t.curve_id AND f.method = '%2$s'

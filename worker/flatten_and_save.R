@@ -340,6 +340,16 @@ flatten_calib_points <- function(pp, job_id, method, response_var = "mfi",
       exclusion_reason    = ifelse(inc, "none", "masked"),
       mask_reason         = .col(std$mask_reason, n, NA_character_, as.character),
       job_id              = job_id, stringsAsFactors = FALSE)
+    # De-duplicate on the calib_standards PK. The *_for_fit views can deliver a
+    # standard well more than once for a curve (1-to-many grain) and preprocess
+    # carries every row through; without this the COPY into calib_standards hits
+    # its OWN rows -> "duplicate key value violates unique constraint". Mirrors
+    # the calib_samples identity-dedup in flatten_result().
+    .pk <- c("curve_id", "method", "well", "dilution")
+    .d  <- duplicated(std_rows[, .pk])
+    if (any(.d)) message(sprintf("  [flatten] dropped %d duplicate standard row(s) on (%s)",
+                                 sum(.d), paste(.pk, collapse = ",")))
+    std_rows <- std_rows[!.d, , drop = FALSE]
   }
 
   blk <- pp$blanks
@@ -358,6 +368,13 @@ flatten_calib_points <- function(pp, job_id, method, response_var = "mfi",
       exclusion_reason   = ifelse(inc, "none", "masked"),
       mask_reason        = .col(blk$mask_reason, n, NA_character_, as.character),
       job_id             = job_id, stringsAsFactors = FALSE)
+    # Same PK de-dup as standards (calib_blanks keys on curve_id/method/well —
+    # no dilution column).
+    .pk <- c("curve_id", "method", "well")
+    .d  <- duplicated(blk_rows[, .pk])
+    if (any(.d)) message(sprintf("  [flatten] dropped %d duplicate blank row(s) on (%s)",
+                                 sum(.d), paste(.pk, collapse = ",")))
+    blk_rows <- blk_rows[!.d, , drop = FALSE]
   }
 
   list(standards = std_rows, blanks = blk_rows)
@@ -494,7 +511,22 @@ flatten_calib_points <- function(pp, job_id, method, response_var = "mfi",
 # ── SAVE (idempotent, curve_id-keyed, one transaction) ───────────────────────
 save_calib <- function(conn, flat, schema = "madi_results", verbose = TRUE) {
   method <- flat$method
-  ids    <- flat$curve_ids[is.finite(flat$curve_ids)]
+  # The DELETE key set must cover every curve_id we are about to INSERT, not just
+  # the fitted plates (flat$curve_ids). flatten_calib_points() builds standards/
+  # blanks from the whole preprocessed group, which can include curve_ids with no
+  # fitted plate (e.g. a curve dropped for non-convergence). If such a curve_id is
+  # inserted but never deleted first, it collides with a prior run's surviving
+  # rows -> duplicate key on calib_standards_pkey. Union across all child frames.
+  .frame_ids <- function(...) {
+    out <- numeric(0)
+    for (d in list(...)) if (is.data.frame(d) && "curve_id" %in% names(d))
+      out <- c(out, suppressWarnings(as.numeric(d$curve_id)))
+    unique(out[is.finite(out)])
+  }
+  ids <- union(
+    flat$curve_ids[is.finite(flat$curve_ids)],
+    .frame_ids(flat$fit, flat$grid, flat$samples, flat$diagnostics,
+               flat$standards, flat$blanks))
   if (!length(ids)) { warning("no curve_ids to save"); return(invisible(NULL)) }
   id_list <- paste(ids, collapse = ",")
   mq <- DBI::dbQuoteLiteral(conn, method)

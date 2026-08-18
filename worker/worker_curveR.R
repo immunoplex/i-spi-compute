@@ -355,6 +355,16 @@ main <- function() {
 
   total_curves <- length(batch)
   done <- 0L; failures <- 0L
+  fail_log <- list()   # structured per-group failures -> deduplicated summary
+
+  # Muffle dependency progress chatter (e.g. "Waiting for profiling to be done...")
+  # so it doesn't flood the job's captured stderr. This catches message()-based
+  # output; if the chatter is cat()/Stan-refresh output instead, set the fitter's
+  # refresh/verbose to 0 rather than relying on this.
+  quiet <- function(expr) withCallingHandlers(expr, message = function(m) {
+    if (grepl("Waiting for profiling", conditionMessage(m), fixed = TRUE))
+      invokeRestart("muffleMessage")
+  })
   message(sprintf("worker_curveR: method=%s n_curves=%d n_groups=%d job=%s (settings: cascade, CLI overrides)",
                   method, total_curves, length(gids), P$job_id))
   message(sprintf("worker cores: %d  (source: %s)", worker_cores,
@@ -408,7 +418,7 @@ main <- function() {
     bo      <- .valid_blank_option(pick("blank_option",
                  sget(rep_cid, "blank_option", NULL), run_blank_option))
 
-    res <- tryCatch({
+    res <- quiet(tryCatch({
       if (is.null(sc) || is.na(sc))
         stop(sprintf("no standard_curve_concentration in antigen_feature_settings for antigen '%s' (feature '%s') — required by curveRcore; not fitting this group",
                      antigen, feature))
@@ -489,16 +499,45 @@ main <- function() {
                         points = pp, verbose = FALSE)
       if (!isTRUE(v$ok)) warning(tag, ": verify_saved reported failures")
       n_grp
-    }, error = function(e) { message("  FAIL ", tag, " :: ", conditionMessage(e)); NA_integer_ })
+    }, error = function(e) {
+      message("  FAIL ", tag)                          # one concise line only
+      fail_log[[length(fail_log) + 1L]] <<- list(      # <<- targets main()'s local
+        gid = gid, antigen = antigen, feature = feature, n = n_grp,
+        msg = conditionMessage(e))
+      NA_integer_
+    }))
 
     if (is.na(res)) failures <- failures + 1L else done <- done + res
     write_progress(P$progress_dir, P$job_id, total_curves, done, "running", cur_group = tag)
   }
 
   status <- if (failures == 0L) "completed" else "failed"
+
+  # Collapse identical failures to one line + a few example groups. Strip the
+  # row-specific DETAIL/CONTEXT so, e.g., 22 duplicate-key errors share one
+  # signature instead of printing 22 multi-line COPY blocks.
+  .summ <- function(fl) {
+    if (!length(fl)) return(character(0))
+    sig <- vapply(fl, function(f) {
+      m <- sub("DETAIL:.*", "", f$msg)
+      m <- sub("save_calib failed: ", "", m, fixed = TRUE)
+      substr(gsub("\\s+", " ", trimws(m)), 1, 140)
+    }, character(1))
+    by <- split(fl, sig)
+    vapply(names(by), function(s) {
+      g  <- by[[s]]
+      ex <- vapply(utils::head(g, 3L), function(f)
+        sprintf("%s (%s/%s)", substr(f$gid, 1, 8), f$antigen, f$feature), character(1))
+      sprintf("  [%d group(s)] %s\n      e.g. %s%s", length(g), s,
+              paste(ex, collapse = ", "),
+              if (length(g) > 3L) sprintf(" +%d more", length(g) - 3L) else "")
+    }, character(1), USE.NAMES = FALSE)
+  }
+
   write_progress(P$progress_dir, P$job_id, total_curves, done, status)
-  message(sprintf("\n==== DONE — %d/%d curves saved, %d group failure(s) ====",
-                  done, total_curves, failures))
+  message(sprintf("\n==== DONE — %d/%d curves saved, %d/%d group(s) failed ====",
+                  done, total_curves, failures, length(gids)))
+  for (l in .summ(fail_log)) message(l)
   if (failures > 0L) 1L else 0L
 }
 
