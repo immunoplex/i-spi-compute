@@ -185,7 +185,7 @@ spec:
             - { name: WORKER_CORES, value: "4" }
           resources:
             requests: { cpu: "1",  memory: 2Gi }
-            limits:   { cpu: "4",  memory: 4Gi }   # tune to study size; keep == WORKER_CORES
+            limits:   { cpu: "16",  memory: 16Gi }   # tune to study size; keep == WORKER_CORES
 
 ---
 apiVersion: networking.k8s.io/v1
