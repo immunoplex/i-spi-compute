@@ -182,7 +182,7 @@ spec:
             - { name: PROGRESS_DIR, value: /tmp }
             # --- CPU cap: MUST equal the CPU limit below (detectCores is not
             #     cgroup-aware). Also caps Stan parallel_chains. ---
-            - { name: WORKER_CORES, value: "4" }
+            - { name: WORKER_CORES, value: "16" }
           resources:
             requests: { cpu: "1",  memory: 2Gi }
             limits:   { cpu: "16",  memory: 16Gi }   # tune to study size; keep == WORKER_CORES
