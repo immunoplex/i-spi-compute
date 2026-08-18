@@ -69,7 +69,7 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:-}
       DB_SSLMODE: ${DB_SSLMODE:-disable}
       # CPU cap (also caps Stan parallel_chains). Match to your machine.
-      WORKER_CORES: ${WORKER_CORES:-4}
+      WORKER_CORES: ${WORKER_CORES:-16}
     depends_on:
       i-spi-compute-redis:
         condition: service_healthy
