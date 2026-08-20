@@ -199,6 +199,12 @@ class JobStatus(BaseModel):
     # What's running right now (a multiplate group tag)
     current_group: Optional[str] = None
 
+    # Liveness clocks for the stale-job watchdog (report-only). heartbeat_at is
+    # stamped every supervisor poll while a worker is attached; progress_at only
+    # when completed_combos advances. Both are ISO-8601 UTC strings.
+    heartbeat_at: Optional[str] = None
+    progress_at: Optional[str] = None
+
     output_path: Optional[str] = None
     error: Optional[str] = None
 
@@ -444,6 +450,8 @@ def _job_data_to_status(data: dict) -> JobStatus:
         eta_display=data.get("eta_display") or None,
         speed_seconds_per_combo=_safe_float(data.get("speed_seconds_per_combo"), default=None),
         current_group=data.get("current_group") or None,
+        heartbeat_at=data.get("heartbeat_at") or None,
+        progress_at=data.get("progress_at") or None,
         output_path=data.get("output_path") or None,
         error=data.get("error") or None,
     )

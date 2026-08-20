@@ -133,17 +133,29 @@ def _human_time(secs: float) -> str:
     return f"~{hours}h {m}m"
 
 
-def sync_progress_to_redis(r: redis.Redis, job_id: str, job_started_at: float):
+def sync_progress_to_redis(r: redis.Redis, job_id: str, job_started_at: float,
+                           last_done: int = -1) -> int:
     """Read progress file and push updates to Redis, including % and ETA.
 
     The progress file speaks in generic 'combos' (units of work). For the curveR
     worker one unit = one curve, so total_combos == n_curves in the batch.
+
+    Also maintains two liveness clocks used by the stale-job watchdog:
+      * heartbeat_at — stamped EVERY call while a worker is attached (even before
+        the first group finishes), so "supervisor+worker loop alive" is provable.
+      * progress_at  — stamped ONLY when completed_combos increases, so "work is
+        actually completing" is distinguishable from "alive but slow" (a legit
+        Bayesian group can run for hours between advances).
+    Returns the latest completed count so the caller can track advances.
     """
+    now_iso = datetime.now(timezone.utc).isoformat()
     progress = read_progress(job_id)
     if progress is None:
-        return
+        # No progress file yet (worker still starting) — still prove liveness.
+        update_job(r, job_id, heartbeat_at=now_iso)
+        return last_done
 
-    fields = {}
+    fields = {"heartbeat_at": now_iso}   # every sync = one heartbeat
     total = int(progress.get("total_combos", 0))
     done = int(progress.get("completed_combos", 0))
 
@@ -178,12 +190,17 @@ def sync_progress_to_redis(r: redis.Redis, job_id: str, job_started_at: float):
             fields["speed_seconds_per_combo"] = ""
             fields["eta_display"] = "estimating..."
 
+    # Real progress advanced -> stamp the progress clock.
+    if done > last_done:
+        fields["progress_at"] = now_iso
+        last_done = done
+
     # The worker reports the multiplate group it is currently fitting.
     if progress.get("current_group"):
         fields["current_group"] = progress["current_group"]
 
-    if fields:
-        update_job(r, job_id, **fields)
+    update_job(r, job_id, **fields)   # fields always carries heartbeat_at
+    return last_done
 
 
 def cleanup_progress(job_id: str):
@@ -241,7 +258,8 @@ def run_job(r: redis.Redis, job_id: str, job_data: dict):
 
     now = datetime.now(timezone.utc).isoformat()
     job_started_at = time.time()
-    update_job(r, job_id, status="running", started_at=now)
+    update_job(r, job_id, status="running", started_at=now,
+               heartbeat_at=now, progress_at=now)
     logger.info(
         "Starting job %s: script=%s method=%s n_curves=%d",
         job_id, script_type, method_flag, len(curve_ids),
@@ -310,6 +328,7 @@ def run_job(r: redis.Redis, job_id: str, job_data: dict):
         reader_thread.start()
 
         # Monitor progress while R runs
+        last_done = -1
         while _current_proc.poll() is None:
             if _shutdown:
                 logger.info("Shutdown requested, terminating R process...")
@@ -326,7 +345,7 @@ def run_job(r: redis.Redis, job_id: str, job_data: dict):
                 _current_proc.wait(timeout=30)
                 return
 
-            sync_progress_to_redis(r, job_id, job_started_at)
+            last_done = sync_progress_to_redis(r, job_id, job_started_at, last_done)
             time.sleep(PROGRESS_POLL_INTERVAL)
 
         # Wait for reader thread to finish draining output
@@ -336,7 +355,7 @@ def run_job(r: redis.Redis, job_id: str, job_data: dict):
         returncode = _current_proc.returncode
 
         # Final progress sync
-        sync_progress_to_redis(r, job_id, job_started_at)
+        sync_progress_to_redis(r, job_id, job_started_at, last_done)
 
         if returncode == 0:
             # curveR writes results to PostgreSQL (madi_results.calib_*), not to

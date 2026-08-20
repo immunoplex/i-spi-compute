@@ -35,6 +35,7 @@
 suppressWarnings(suppressMessages({
   library(DBI); library(RPostgres); library(dplyr); library(jsonlite)
   library(curveRcore); library(curveRfreq); library(curveRbayes)
+  library(parallel)
 }))
 
 `%||%` <- function(a, b) if (is.null(a) || length(a) == 0 || (length(a) == 1 && is.na(a))) b else a
@@ -292,6 +293,173 @@ write_progress <- function(dir, job_id, total, done, status, cur_group = "") {
 }
 
 
+# ── parallel fitting across multiplate groups ────────────────────────────────
+# Groups are INDEPENDENT fitting units (each is a distinct data slice, so their
+# curveRcore preprocessing never shares state). We fit several at once via
+# fork (mclapply), splitting the CPU budget two ways:
+#   * frequentist fits are single-threaded -> run up to WORKER_CORES groups.
+#   * bayesian fits run `chains` chains in parallel (cmdstanr parallel_chains =
+#     mc.cores) -> run WORKER_CORES %/% chains groups at once, each fit pinned to
+#     `chains` cores. The product saturates the box without oversubscribing.
+# Fan-out is then clamped DOWN by a memory budget (never up: cores are the
+# ceiling), so a smaller-RAM / higher-core box can't OOM. WORKER_MAX_PARALLEL is
+# a final hard cap; setting it to 1 restores strictly-sequential behaviour.
+#
+# Deploy-time resource envelope (container build / k8s manifest):
+#   WORKER_CORES            CPUs available to this worker (set by deployment)
+#   WORKER_MEM_MB           memory budget in MiB (default: cgroup limit − headroom)
+#   WORKER_MEM_FRACTION     fraction of the cgroup limit to treat as usable (0.90)
+#   WORKER_MEM_RESERVE_MB   absolute MiB held back for R + OS + parent (1500)
+#   WORKER_FIT_MEM_MB_FREQ  per-concurrent frequentist fit estimate (MiB)
+#   WORKER_FIT_MEM_MB_BAYES per-concurrent bayesian fit estimate (MiB)
+#   WORKER_MAX_PARALLEL     hard cap on group fan-out (final clamp)
+
+# Usable memory budget in MiB. An explicit WORKER_MEM_MB wins; otherwise read the
+# container's cgroup limit (v2 then v1) and hold back headroom so the fits + base
+# R + OS never run the cgroup to the OOM edge. Returns Inf only when no limit is
+# discoverable, in which case cores govern.
+worker_mem_mb <- function() {
+  env <- suppressWarnings(as.integer(Sys.getenv("WORKER_MEM_MB", "")))
+  if (!is.na(env) && env >= 1L) return(env)               # explicit override wins
+  limit <- Inf
+  for (p in c("/sys/fs/cgroup/memory.max",                       # cgroup v2
+              "/sys/fs/cgroup/memory/memory.limit_in_bytes")) {  # cgroup v1
+    v <- tryCatch(readLines(p, n = 1, warn = FALSE), error = function(e) NA_character_)
+    n <- suppressWarnings(as.numeric(v))
+    if (length(n) && is.finite(n) && n > 0 && n < 8e18) { limit <- n / 1024^2; break }
+  }
+  if (!is.finite(limit)) return(Inf)                       # no limit -> cores govern
+  frac <- suppressWarnings(as.numeric(Sys.getenv("WORKER_MEM_FRACTION", "0.90")))
+  rsv  <- suppressWarnings(as.integer(Sys.getenv("WORKER_MEM_RESERVE_MB", "1500")))
+  usable <- min(limit * if (is.finite(frac)) frac else 0.90,
+                limit - if (!is.na(rsv)) rsv else 1500L)
+  max(1L, as.integer(usable))
+}
+
+# Per-concurrent-fit memory estimate (MiB). Method-specific env override, else a
+# measured default: ~625 MiB for a frequentist fit (R only, no child procs) and
+# ~1 GiB peak for a 4-chain bayesian group (R + cmdstan children, from cgroup
+# memory.max_usage) plus headroom for heavier groups.
+worker_fit_mem_mb <- function(is_bayes) {
+  key <- if (is_bayes) "WORKER_FIT_MEM_MB_BAYES" else "WORKER_FIT_MEM_MB_FREQ"
+  env <- suppressWarnings(as.integer(Sys.getenv(key, Sys.getenv("WORKER_FIT_MEM_MB", ""))))
+  if (!is.na(env) && env >= 1L) return(env)
+  if (is_bayes) 1280L else 640L
+}
+
+plan_parallelism <- function(is_bayes, cores, chains,
+                             mem_mb     = worker_mem_mb(),
+                             fit_mem_mb = worker_fit_mem_mb(is_bayes)) {
+  per_fit   <- if (is_bayes) max(1L, as.integer(chains)) else 1L
+  by_cores  <- max(1L, cores %/% per_fit)
+  by_memory <- if (is.finite(mem_mb) && fit_mem_mb > 0)
+                 max(1L, as.integer(mem_mb %/% fit_mem_mb)) else by_cores
+  # min(): memory only ever pulls fan-out DOWN. Cores stay the ceiling -- do not
+  # change this to allow memory to raise fan-out above the core budget.
+  n_parallel <- min(by_cores, by_memory)
+  cap <- suppressWarnings(as.integer(Sys.getenv("WORKER_MAX_PARALLEL", "")))
+  if (!is.na(cap) && cap >= 1L) n_parallel <- min(n_parallel, cap)
+  list(n_parallel = n_parallel, per_fit = per_fit,
+       by_cores = by_cores, by_memory = by_memory, mem_mb = mem_mb)
+}
+
+# Muffle dependency progress chatter (message()-based) so it doesn't flood the
+# job's captured stderr. File-scope so forked workers can use it too.
+.quiet <- function(expr) withCallingHandlers(expr, message = function(m) {
+  if (grepl("Waiting for profiling", conditionMessage(m), fixed = TRUE))
+    invokeRestart("muffleMessage")
+})
+
+# Fit ONE fully-resolved multiplate group. Runs in a forked child (or inline when
+# n_parallel == 1): opens its OWN db connection (a single libpq socket must never
+# be shared across forks), pins itself to `per_fit` cores, and returns a small
+# result -- NEVER mutates parent state (no `<<-`, which does not cross a fork).
+# `gb` carries the group's data slices AND its already-resolved settings, so the
+# child needs no cascade/CLI lookups. Returns list(done = <curves>, fail = NULL)
+# or list(done = 0L, fail = <record>).
+fit_one_group <- function(gb, method, is_bayes, seed, job_id, per_fit) {
+  options(mc.cores = per_fit)   # cmdstanr's parallel_chains defaults to this
+  conn <- open_conn()
+  on.exit(try(DBI::dbDisconnect(conn), silent = TRUE), add = TRUE)
+
+  # Drop pipeline/grouping columns so the (unchanged) fitters see the pre-cutover
+  # frame shape. curve_id is preserved -- the fitters require it.
+  .fit_cols <- function(df) {
+    if (is.null(df)) return(df)
+    df[, setdiff(names(df),
+                 c("included", "assay_response_raw", "masked", "multiplate_group_id")),
+       drop = FALSE]
+  }
+
+  .quiet(tryCatch({
+    if (is.null(gb$sc) || is.na(gb$sc))
+      stop(sprintf("no standard_curve_concentration in antigen_feature_settings for antigen '%s' (feature '%s') — required by curveRcore; not fitting this group",
+                   gb$antigen, gb$feature))
+
+    sg <- gb$sg; bg <- gb$bg; smg <- gb$smg
+    # Row-level mask status -> included flag (TRUE = enters the fit). Masked
+    # wells are retained (transformed and persisted) but NEVER fed to the fitter.
+    sg$included <- !(as.logical(sg$masked) %in% TRUE)
+    if (nrow(bg)) bg$included <- !(as.logical(bg$masked) %in% TRUE)
+
+    pp <- preprocess_standards(
+      data = sg, blank_data = if (nrow(bg)) bg else NULL,
+      antigen_settings = list(standard_curve_concentration = gb$sc),
+      response_variable = "mfi", independent_variable = "concentration",
+      is_log_response = gb$study_params$is_log_response,
+      is_log_independent = gb$study_params$is_log_independent,
+      apply_prozone = gb$study_params$apply_prozone,
+      blank_option = gb$bo, include_col = "included")
+
+    std_fit <- .fit_cols(pp$data[pp$data$included %in% TRUE, , drop = FALSE])
+    blk_fit <- if (!nrow(bg)) NULL else {
+      bf <- bg[bg$included %in% TRUE, , drop = FALSE]
+      if (nrow(bf)) .fit_cols(bf) else NULL
+    }
+    smp_in <- if (nrow(smg)) .fit_cols(smg) else NULL
+
+    if (is_bayes) {
+      mp <- curveRbayes::fit_calibration_bayes(
+        standards = std_fit, samples = smp_in, blanks = blk_fit,
+        response_var = "mfi", model_names = gb$models,
+        is_log_response = gb$study_params$is_log_response,
+        is_log_independent = gb$study_params$is_log_independent,
+        std_curve_conc = gb$sc, cv_x_max = 150, pcov_threshold = gb$pcov_th,
+        chains = gb$b_chains, warmup = gb$b_warmup,
+        sampling = gb$b_samp, adapt_delta = gb$b_adapt,
+        seed = seed, include_measurement_error = gb$inc_me,
+        run_loo = TRUE, verbose = FALSE)
+    } else {
+      mp <- curveRfreq::fit_calibration_freq_multiplate(
+        standards = std_fit, blanks = blk_fit, samples = smp_in,
+        response_var = "mfi", model_names = gb$models,
+        is_log_response = gb$study_params$is_log_response,
+        is_log_independent = gb$study_params$is_log_independent,
+        std_curve_conc = gb$sc, cv_x_max = 150)
+    }
+
+    mp <- curveRcore::compute_detection_limits_multiplate(mp)
+
+    flat <- flatten_result(mp, job_id = job_id, method = method)
+    pts <- flatten_calib_points(pp, job_id = job_id, method = method,
+                                response_var = "mfi",
+                                is_log_independent = gb$study_params$is_log_independent)
+    flat$standards <- pts$standards
+    flat$blanks    <- pts$blanks
+    save_calib(conn, flat)
+    v <- verify_saved(mp, job_id = job_id, method = method, conn = conn,
+                      points = pp, verbose = FALSE)
+    if (!isTRUE(v$ok)) warning(gb$tag, ": verify_saved reported failures")
+    list(done = gb$n_grp, fail = NULL)
+  }, error = function(e) {
+    message("  FAIL ", gb$tag)                          # one concise line only
+    list(done = 0L, fail = list(gid = gb$gid, antigen = gb$antigen,
+                                feature = gb$feature, n = gb$n_grp,
+                                msg = conditionMessage(e)))
+  }))
+}
+
+
 # ── MAIN ─────────────────────────────────────────────────────────────────────
 main <- function() {
   P <- parse_args()
@@ -357,17 +525,68 @@ main <- function() {
   done <- 0L; failures <- 0L
   fail_log <- list()   # structured per-group failures -> deduplicated summary
 
-  # Muffle dependency progress chatter (e.g. "Waiting for profiling to be done...")
-  # so it doesn't flood the job's captured stderr. This catches message()-based
-  # output; if the chatter is cat()/Stan-refresh output instead, set the fitter's
-  # refresh/verbose to 0 rather than relying on this.
-  quiet <- function(expr) withCallingHandlers(expr, message = function(m) {
-    if (grepl("Waiting for profiling", conditionMessage(m), fixed = TRUE))
-      invokeRestart("muffleMessage")
-  })
+  # ── build a fully-resolved bundle per group (IN THE PARENT) ─────────────────
+  # All cascade/CLI settings resolution happens here, once, so each forked child
+  # gets a self-contained unit and needs no pick()/sget() lookups. We also slice
+  # the group's data here and carry ONLY that slice, so children never reference
+  # the full std/blk/smp frames (keeps fork copy-on-write memory small).
+  build_bundle <- function(gid) {
+    sg  <- std[as.character(std$multiplate_group_id) == gid, , drop = FALSE]
+    bg  <- if (nrow(blk)) blk[as.character(blk$multiplate_group_id) == gid, , drop = FALSE]
+           else blk[0, , drop = FALSE]
+    smg <- if (nrow(smp)) smp[as.character(smp$multiplate_group_id) == gid, , drop = FALSE]
+           else smp[0, , drop = FALSE]
+    antigen <- as.character(sg$antigen[1]); feature <- as.character(sg$feature[1])
+    n_grp   <- length(unique(sg$curve_id))
+    rep_cid <- sg$curve_id[1]              # representative curve_id (settings are group-uniform)
+    list(
+      gid = gid, sg = sg, bg = bg, smg = smg,
+      antigen = antigen, feature = feature, n_grp = n_grp,
+      tag = sprintf("group=%s antigen=%s feature=%s n_curves=%d",
+                    gid, antigen, feature, n_grp),
+      study_params = list(
+        is_log_response    = .as_bool(sget(rep_cid, "is_log_response",    "true"), TRUE),
+        is_log_independent = .as_bool(sget(rep_cid, "is_log_independent", "true"), TRUE),
+        apply_prozone      = .as_bool(sget(rep_cid, "apply_prozone",      "true"), TRUE)),
+      models = {
+        mv <- pick("models", sget(rep_cid, "model_form_list", NULL),
+                   "logistic5,loglogistic5,logistic4,loglogistic4,gompertz4")
+        trimws(strsplit(mv, ",")[[1]])     # defensive trim (store is clean, UI may not be)
+      },
+      pcov_th = .as_num(pick("cdan_cv", sget(rep_cid, "pcov_threshold", NULL), "20"), 20),
+      inc_me  = !identical(tolower(trimws(
+                  pick("include_measurement_error",
+                       sget(rep_cid, "include_measurement_error", NULL), "true"))), "false"),
+      # bayes sampling knobs: CLI over cascade over coded default.
+      b_chains = as.integer(pick("chains",   sget(rep_cid, "bayes_chains",   NULL), "4")),
+      b_warmup = as.integer(pick("warmup",   sget(rep_cid, "bayes_warmup",   NULL), "1000")),
+      b_samp   = as.integer(pick("sampling", sget(rep_cid, "bayes_sampling", NULL), "1000")),
+      b_adapt  = .as_num(pick("adapt_delta", sget(rep_cid, "adapt_delta",    NULL), "0.9"), 0.9),
+      # standard_curve_concentration is a HARD requirement of curveRcore (a
+      # concentration, not a dilution) with no fallback; the loud stop lives in
+      # fit_one_group as a low-cost safety net.
+      sc = .as_num(sget(rep_cid, "standard_curve_concentration", NULL), NA_real_),
+      bo = .valid_blank_option(pick("blank_option",
+             sget(rep_cid, "blank_option", NULL), run_blank_option)))
+  }
+  bundles <- lapply(gids, build_bundle)
+
+  # ── decide fan-out: cores split by per-fit budget, clamped DOWN by memory ────
+  # `chains` for budgeting is group-uniform in practice; take the MAX across
+  # bundles so we never oversubscribe if a group carries a larger chain count.
+  chains_rep <- max(1L, suppressWarnings(max(vapply(bundles, function(b) b$b_chains, integer(1)))))
+  pp_plan <- plan_parallelism(is_bayes, worker_cores, chains_rep)
+  np <- pp_plan$n_parallel; per_fit <- pp_plan$per_fit
+
+  # Free the big frames before forking: children hold only their bundle slice.
+  rm(std, blk, smp); invisible(gc(FALSE))
+
   message(sprintf("worker_curveR: method=%s n_curves=%d n_groups=%d job=%s (settings: cascade, CLI overrides)",
                   method, total_curves, length(gids), P$job_id))
-  message(sprintf("worker cores: %d  (source: %s)", worker_cores,
+  message(sprintf("parallelism: %d group(s) at once x %d core(s)/fit  (cores=%d by_cores=%d by_memory=%s mem=%s MiB; source=%s)",
+                  np, per_fit, worker_cores, pp_plan$by_cores,
+                  if (is.finite(pp_plan$by_memory)) pp_plan$by_memory else "inf",
+                  if (is.finite(pp_plan$mem_mb)) format(pp_plan$mem_mb) else "inf",
                   if (nzchar(Sys.getenv("WORKER_CORES"))) "WORKER_CORES" else "detectCores()"))
   message(sprintf("blank handling: run default = '%s'%s", run_blank_option,
                   if (nzchar(Sys.getenv("WORKER_BLANK_OPTION_COL")))
@@ -375,140 +594,47 @@ main <- function() {
                             Sys.getenv("WORKER_BLANK_OPTION_COL")) else ""))
   write_progress(P$progress_dir, P$job_id, total_curves, done, "running")
 
-  # ── fit each multiplate group ───────────────────────────────────────────
-  for (gid in gids) {
-    sg  <- std[as.character(std$multiplate_group_id) == gid, , drop = FALSE]
-    bg  <- if (nrow(blk)) blk[as.character(blk$multiplate_group_id) == gid, , drop = FALSE]
-           else blk[0, , drop = FALSE]
-    smg <- if (nrow(smp)) smp[as.character(smp$multiplate_group_id) == gid, , drop = FALSE]
-           else smp[0, , drop = FALSE]
+  # The parent's read connection must NOT be shared into forks (one libpq socket
+  # cannot be used concurrently). Close it now; every child opens its own via
+  # open_conn(), and the on.exit disconnect above becomes a harmless no-op.
+  try(DBI::dbDisconnect(conn), silent = TRUE)
 
-    antigen <- as.character(sg$antigen[1]); feature <- as.character(sg$feature[1])
-    n_grp   <- length(unique(sg$curve_id))
-    rep_cid <- sg$curve_id[1]              # representative curve_id (settings are group-uniform)
-    tag     <- sprintf("group=%s antigen=%s feature=%s n_curves=%d",
-                       gid, antigen, feature, n_grp)
-
-    # ---- resolve this group's settings (cascade), with CLI override ----------
-    study_params <- list(
-      is_log_response    = .as_bool(sget(rep_cid, "is_log_response",    "true"), TRUE),
-      is_log_independent = .as_bool(sget(rep_cid, "is_log_independent", "true"), TRUE),
-      apply_prozone      = .as_bool(sget(rep_cid, "apply_prozone",      "true"), TRUE))
-    models  <- {
-      mv <- pick("models", sget(rep_cid, "model_form_list", NULL),
-                 "logistic5,loglogistic5,logistic4,loglogistic4,gompertz4")
-      trimws(strsplit(mv, ",")[[1]])       # defensive trim (store is clean, UI may not be)
+  # Accumulate one child's structured result into the run totals.
+  absorb <- function(r, gb) {
+    if (inherits(r, "try-error") || is.null(r) || !is.list(r) || is.null(r$done)) {
+      failures <<- failures + 1L
+      msg <- if (inherits(r, "try-error")) conditionMessage(attr(r, "condition")) else "worker returned no result (crash/OOM?)"
+      fail_log[[length(fail_log) + 1L]] <<- list(gid = gb$gid, antigen = gb$antigen,
+        feature = gb$feature, n = gb$n_grp, msg = paste("child failed:", msg))
+      message("  FAIL ", gb$tag)
+    } else if (!is.null(r$fail)) {
+      failures <<- failures + 1L
+      fail_log[[length(fail_log) + 1L]] <<- r$fail
+    } else {
+      done <<- done + r$done
     }
-    pcov_th <- .as_num(pick("cdan_cv", sget(rep_cid, "pcov_threshold", NULL), "20"), 20)
-    inc_me  <- !identical(tolower(trimws(
-                 pick("include_measurement_error",
-                      sget(rep_cid, "include_measurement_error", NULL), "true"))), "false")
-    # bayes sampling knobs: CLI over cascade over coded default.
-    b_chains  <- as.integer(pick("chains",   sget(rep_cid, "bayes_chains",   NULL), "4"))
-    b_warmup  <- as.integer(pick("warmup",   sget(rep_cid, "bayes_warmup",   NULL), "1000"))
-    b_samp    <- as.integer(pick("sampling", sget(rep_cid, "bayes_sampling", NULL), "1000"))
-    b_adapt   <- .as_num(pick("adapt_delta", sget(rep_cid, "adapt_delta",    NULL), "0.9"), 0.9)
+  }
 
-    # standard_curve_concentration is a HARD requirement of curveRcore — it is a
-    # concentration, conceptually and often type-distinct from a dilution factor,
-    # so there is NO fallback (e.g. to nominal_sample_dilution). With the cascade
-    # __system__ default of 10000 (arbitrary units) this effectively always
-    # resolves, but the loud stop is kept as a low-cost, consistent safety net.
-    sc      <- .as_num(sget(rep_cid, "standard_curve_concentration", NULL), NA_real_)
-    bo      <- .valid_blank_option(pick("blank_option",
-                 sget(rep_cid, "blank_option", NULL), run_blank_option))
+  run_one <- function(gb) fit_one_group(gb, method, is_bayes, seed, P$job_id, per_fit)
 
-    res <- quiet(tryCatch({
-      if (is.null(sc) || is.na(sc))
-        stop(sprintf("no standard_curve_concentration in antigen_feature_settings for antigen '%s' (feature '%s') — required by curveRcore; not fitting this group",
-                     antigen, feature))
-
-      # Row-level mask status -> included flag (TRUE = enters the fit). Masked
-      # wells are retained (transformed and persisted) but NEVER fed to the fitter.
-      sg$included <- !(as.logical(sg$masked) %in% TRUE)
-      if (nrow(bg)) bg$included <- !(as.logical(bg$masked) %in% TRUE)
-
-      # Preprocess the FULL set (stats from included; transforms applied to all).
-      # Keep the whole object: $data + $blanks are persisted; the fitter gets
-      # only the included subset.
-      pp <- preprocess_standards(
-        data = sg, blank_data = if (nrow(bg)) bg else NULL,
-        antigen_settings = list(standard_curve_concentration = sc),
-        response_variable = "mfi", independent_variable = "concentration",
-        is_log_response = study_params$is_log_response,
-        is_log_independent = study_params$is_log_independent,
-        apply_prozone = study_params$apply_prozone,
-        blank_option = bo, include_col = "included")
-
-      # Fit inputs: included rows only, with pipeline/grouping columns stripped so
-      # the (UNCHANGED) fitters see exactly the pre-cutover frame shape:
-      #   included / assay_response_raw / masked  — mask-aware columns this worker
-      #     and preprocess add; the fitters never saw them.
-      #   multiplate_group_id                     — the view's grouping key. It is
-      #     NOT a fit input (multiplate fitting keys on curve_id), so it must not
-      #     leak into the fitter, where it would be unused at best or break the
-      #     input contract at worst.
-      # curve_id is preserved — the fitters require it.
-      .fit_cols <- function(df) {
-        if (is.null(df)) return(df)
-        df[, setdiff(names(df),
-                     c("included", "assay_response_raw", "masked", "multiplate_group_id")),
-           drop = FALSE]
-      }
-      std_fit <- .fit_cols(pp$data[pp$data$included %in% TRUE, , drop = FALSE])
-      blk_fit <- if (!nrow(bg)) NULL else {
-        bf <- bg[bg$included %in% TRUE, , drop = FALSE]
-        if (nrow(bf)) .fit_cols(bf) else NULL
-      }
-      # Samples also arrive straight from the view (SELECT *), so strip the same
-      # grouping column before handing them to the fitter.
-      smp_in <- if (nrow(smg)) .fit_cols(smg) else NULL
-
-      if (is_bayes) {
-        mp <- curveRbayes::fit_calibration_bayes(
-          standards = std_fit, samples = smp_in, blanks = blk_fit,
-          response_var = "mfi", model_names = models,
-          is_log_response = study_params$is_log_response,
-          is_log_independent = study_params$is_log_independent,
-          std_curve_conc = sc, cv_x_max = 150, pcov_threshold = pcov_th,
-          chains = b_chains, warmup = b_warmup,
-          sampling = b_samp, adapt_delta = b_adapt,
-          seed = seed, include_measurement_error = inc_me,
-          run_loo = TRUE, verbose = FALSE)
-      } else {
-        mp <- curveRfreq::fit_calibration_freq_multiplate(
-          standards = std_fit, blanks = blk_fit, samples = smp_in,
-          response_var = "mfi", model_names = models,
-          is_log_response = study_params$is_log_response,
-          is_log_independent = study_params$is_log_independent,
-          std_curve_conc = sc, cv_x_max = 150)
-      }
-
-      mp <- curveRcore::compute_detection_limits_multiplate(mp)
-
-      flat <- flatten_result(mp, job_id = P$job_id, method = method)
-      # Attach persisted standard/blank point sets (ALL rows, with status),
-      # built from preprocessing output. curve_id is already on every row.
-      pts <- flatten_calib_points(pp, job_id = P$job_id, method = method,
-                                  response_var = "mfi",
-                                  is_log_independent = study_params$is_log_independent)
-      flat$standards <- pts$standards
-      flat$blanks    <- pts$blanks
-      save_calib(conn, flat)
-      v <- verify_saved(mp, job_id = P$job_id, method = method, conn = conn,
-                        points = pp, verbose = FALSE)
-      if (!isTRUE(v$ok)) warning(tag, ": verify_saved reported failures")
-      n_grp
-    }, error = function(e) {
-      message("  FAIL ", tag)                          # one concise line only
-      fail_log[[length(fail_log) + 1L]] <<- list(      # <<- targets main()'s local
-        gid = gid, antigen = antigen, feature = feature, n = n_grp,
-        msg = conditionMessage(e))
-      NA_integer_
-    }))
-
-    if (is.na(res)) failures <- failures + 1L else done <- done + res
-    write_progress(P$progress_dir, P$job_id, total_curves, done, "running", cur_group = tag)
+  # ── fit groups: sequential when np==1, else batched fork-parallel ───────────
+  # Batches of `np` bound concurrent forks (memory) AND give per-batch progress,
+  # so the heartbeat/progress stamps advance every batch rather than only at end.
+  if (np <= 1L) {
+    for (gb in bundles) {
+      absorb(run_one(gb), gb)
+      write_progress(P$progress_dir, P$job_id, total_curves, done, "running", cur_group = gb$tag)
+    }
+  } else {
+    batches <- split(seq_along(bundles), ceiling(seq_along(bundles) / np))
+    for (bi in batches) {
+      outs <- parallel::mclapply(bundles[bi], run_one,
+                                 mc.cores = np, mc.preschedule = FALSE)
+      for (k in seq_along(bi)) absorb(outs[[k]], bundles[[bi[k]]])
+      write_progress(P$progress_dir, P$job_id, total_curves, done, "running",
+                     cur_group = sprintf("%d/%d curves fit (%d group(s)/batch x %d core(s))",
+                                         done, total_curves, np, per_fit))
+    }
   }
 
   status <- if (failures == 0L) "completed" else "failed"
