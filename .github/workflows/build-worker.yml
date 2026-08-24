@@ -21,9 +21,9 @@ env:
   # builds — curveRcore v0.4.0 (done), curveRbayes v0.4.0, and curveRfreq v0.4.0
   # (tag its current main in lockstep). Set any to 'main' to track a branch
   # instead of a tag.
-  CURVERCORE_REF: v0.4.0
-  CURVERFREQ_REF: v0.4.0
-  CURVERBAYES_REF: v0.4.0
+  CURVERCORE_REF: main
+  CURVERFREQ_REF: main
+  CURVERBAYES_REF: main
   CURVERWEIGHTS_REF: main
 
 jobs:
@@ -81,8 +81,8 @@ jobs:
           build-args: |
             CURVERCORE_REF=${{ env.CURVERCORE_REF }}
             CURVERFREQ_REF=${{ env.CURVERFREQ_REF }}
-            # CURVERBAYES_REF=${{ env.CURVERBAYES_REF }}
-            CURVERBAYES_REF: 29fef4e99a42652f7e545a85f30a628a0be186a2
+            CURVERBAYES_REF=${{ env.CURVERBAYES_REF }}
+            # CURVERBAYES_REF: 29fef4e99a42652f7e545a85f30a628a0be186a2
             CURVERWEIGHTS_REF=${{ env.CURVERWEIGHTS_REF }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

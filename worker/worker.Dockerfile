@@ -69,6 +69,7 @@ ENV CMDSTAN=/opt/cmdstan/current
 ARG CURVERCORE_REF=main
 ARG CURVERFREQ_REF=main
 ARG CURVERBAYES_REF=main
+# ARG CURVERBAYES_REF=curveRbayes@29fef4e
 ARG CURVERWEIGHTS_REF=main
 
 # curveRcore first — the fitters build against it.
