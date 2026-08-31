@@ -55,9 +55,11 @@ suppressWarnings(suppressMessages({
   if (inherits(mp, "calibration_result_multiplate")) {
     plates <- mp$plates
     method <- method %||% mp$meta$method
+    mp_pop <- mp$population        # pooled (bayes) population lives on the container
   } else if (inherits(mp, "calibration_result")) {
     plates <- stats::setNames(list(mp), as.character(mp$meta$curve_id))
     method <- method %||% mp$meta$method
+    mp_pop <- NULL
   } else {
     stop("mp must be a calibration_result or calibration_result_multiplate")
   }
@@ -94,6 +96,16 @@ suppressWarnings(suppressMessages({
     n_grid    <- if (is.data.frame(cr$grid)) nrow(cr$grid) else 0L
     n_samples <- if (is.data.frame(cr$samples)) nrow(cr$samples) else 0L
 
+    # schema-expansion tables, derived from the population slot (per-plate slot
+    # for per-plate arms; else the pooled container slot). Self-consistent with
+    # persist_draws: draws are absent unless the fit persisted them.
+    pop <- cr$population %||% mp_pop
+    n_hyper <- if (!is.null(pop) && is.data.frame(pop$params)) nrow(pop$params) else 0L
+    n_fitdiag <- if (!is.null(pop) && !is.null(pop$fit_diag)) 1L else 0L
+    cur_draws <- tryCatch(cr$ensemble[[best]]$draws, error = function(z) NULL)
+    n_draws <- length(cur_draws %||% list()) +
+               (if (!is.null(pop)) length(pop$draws %||% list()) else 0L)
+
     data.frame(
       curve_id      = as.character(cid),
       method        = method,
@@ -106,6 +118,9 @@ suppressWarnings(suppressMessages({
       exp_samples   = as.integer(n_samples),
       exp_diag      = 1L,                # one diagnostics row per curve×method
       exp_loo       = if (identical(method, "bayesian")) n_models else 0L,
+      exp_hyper     = as.integer(n_hyper),
+      exp_fitdiag   = as.integer(n_fitdiag),
+      exp_draws     = as.integer(n_draws),
       stringsAsFactors = FALSE
     )
   })
@@ -182,6 +197,9 @@ verify_saved <- function(mp,
   samp_obs  <- .vs_counts(conn, schema, "calib_samples",     method, curve_ids, job_id)
   diag_obs  <- .vs_counts(conn, schema, "calib_diagnostics", method, curve_ids, job_id)
   loo_obs   <- .vs_counts(conn, schema, "calib_loo",         method, curve_ids, job_id)
+  hyper_obs <- .vs_counts(conn, schema, "calib_hyperparam",  method, curve_ids, job_id)
+  fdiag_obs <- .vs_counts(conn, schema, "calib_fit_diag",    method, curve_ids, job_id)
+  draws_obs <- .vs_counts(conn, schema, "calib_draws",       method, curve_ids, job_id)
 
   # persisted point sets (only checked when the caller passes `points` = pp)
   std_obs <- blk_obs <- NULL
@@ -255,6 +273,16 @@ verify_saved <- function(mp,
       mk(cid, "calib_loo",   "n_loo_rows",   exp$exp_loo[i],   obs_n(loo_obs, cid))
     ))
 
+    # schema-expansion tables. hyperparam + fit_diag counts are deterministic
+    # from the object -> HARD. draws volume is large and gated -> SOFT.
+    hard <- c(hard, list(
+      mk(cid, "calib_hyperparam", "n_terms",  exp$exp_hyper[i],   obs_n(hyper_obs, cid)),
+      mk(cid, "calib_fit_diag",   "one_row",   exp$exp_fitdiag[i], obs_n(fdiag_obs, cid))
+    ))
+    soft <- c(soft, list(
+      mk(cid, "calib_draws", "n_draw_terms", exp$exp_draws[i], obs_n(draws_obs, cid))
+    ))
+
     # persisted point sets (mask-aware contract) — only when `points` supplied
     if (!is.null(points)) {
       gett <- function(t, k) {
@@ -302,6 +330,12 @@ verify_saved <- function(mp,
          UNION SELECT 'calib_standards', curve_id FROM %1$s.calib_standards
            WHERE method='%2$s' AND curve_id IN (%3$s)
          UNION SELECT 'calib_blanks', curve_id FROM %1$s.calib_blanks
+           WHERE method='%2$s' AND curve_id IN (%3$s)
+         UNION SELECT 'calib_hyperparam', curve_id FROM %1$s.calib_hyperparam
+           WHERE method='%2$s' AND curve_id IN (%3$s)
+         UNION SELECT 'calib_fit_diag', curve_id FROM %1$s.calib_fit_diag
+           WHERE method='%2$s' AND curve_id IN (%3$s)
+         UNION SELECT 'calib_draws', curve_id FROM %1$s.calib_draws
            WHERE method='%2$s' AND curve_id IN (%3$s)
        ) t
        LEFT JOIN %1$s.calib_fit f

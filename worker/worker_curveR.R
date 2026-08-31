@@ -428,6 +428,8 @@ fit_one_group <- function(gb, method, is_bayes, seed, job_id, per_fit) {
         chains = gb$b_chains, warmup = gb$b_warmup,
         sampling = gb$b_samp, adapt_delta = gb$b_adapt,
         seed = seed, include_measurement_error = gb$inc_me,
+        persist_draws = gb$persist_draws,
+        bayes_single_plate = gb$bayes_single_plate,
         run_loo = TRUE, verbose = FALSE)
     } else {
       mp <- curveRfreq::fit_calibration_freq_multiplate(
@@ -435,7 +437,8 @@ fit_one_group <- function(gb, method, is_bayes, seed, job_id, per_fit) {
         response_var = "mfi", model_names = gb$models,
         is_log_response = gb$study_params$is_log_response,
         is_log_independent = gb$study_params$is_log_independent,
-        std_curve_conc = gb$sc, cv_x_max = 150)
+        std_curve_conc = gb$sc, cv_x_max = 150,
+        persist_draws = gb$persist_draws)
     }
 
     mp <- curveRcore::compute_detection_limits_multiplate(mp)
@@ -562,6 +565,11 @@ main <- function() {
       b_warmup = as.integer(pick("warmup",   sget(rep_cid, "bayes_warmup",   NULL), "1000")),
       b_samp   = as.integer(pick("sampling", sget(rep_cid, "bayes_sampling", NULL), "1000")),
       b_adapt  = .as_num(pick("adapt_delta", sget(rep_cid, "adapt_delta",    NULL), "0.9"), 0.9),
+      # schema-expansion toggles (CLI over cascade over coded default; both FALSE)
+      persist_draws      = .as_bool(pick("persist_draws",
+                             sget(rep_cid, "persist_draws", NULL), "false"), FALSE),
+      bayes_single_plate = .as_bool(pick("bayes_single_plate",
+                             sget(rep_cid, "bayes_single_plate", NULL), "false"), FALSE),
       # standard_curve_concentration is a HARD requirement of curveRcore (a
       # concentration, not a dilution) with no fallback; the loud stop lives in
       # fit_one_group as a low-cost safety net.

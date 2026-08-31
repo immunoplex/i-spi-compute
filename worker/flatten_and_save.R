@@ -96,7 +96,7 @@ flatten_result <- function(mp, job_id, method = NULL) {
   is_bayes <- identical(method, "bayesian")
 
   fit_rows <- param_rows <- gate_rows <- grid_rows <- samp_rows <-
-    diag_rows <- loo_rows <- list()
+    diag_rows <- loo_rows <- hyper_rows <- draw_rows <- fitdiag_rows <- list()
 
   # pooled LOO info (bayes): computed once on the joint fit, replicated per curve
   loo_info <- if (is_bayes) .loo_table(mp) else NULL   # data.frame(model_name, elpd_loo, ...)
@@ -265,6 +265,62 @@ flatten_result <- function(mp, job_id, method = NULL) {
       cv_x_max = .na(cr$meta$cv_x_max),
       alpha = .na(dl$alpha),
       job_id = job_id, stringsAsFactors = FALSE)
+
+    # ── population/noise params + fit diagnostics + draws (selected model) ────
+    # Population lives on the plate (per-plate arms: single-plate Bayes / freq)
+    # or on the multiplate container (pooled Bayes) — take the plate's first,
+    # else the pooled slot. model_name = the selected model. calib_draws rows
+    # appear only when the fit was run with persist_draws (curveRbayes fills
+    # $draws only then), so no explicit gate is needed here.
+    pop <- cr$population %||% (if (inherits(mp, "calibration_result_multiplate")) mp$population else NULL)
+    if (!is.null(pop)) {
+      pop_model <- pop$model_name %||% best
+
+      pp <- pop$params
+      if (is.data.frame(pp) && nrow(pp)) {
+        hyper_rows[[length(hyper_rows)+1L]] <- data.frame(
+          curve_id = cid_i, method = method, model_name = pop_model,
+          term = as.character(pp$term), param_scope = "population",
+          estimate = .col(pp$estimate, nrow(pp)), std_error = .col(pp$std_error, nrow(pp)),
+          q_lo = .col(pp$q_lo, nrow(pp)), q_med = .col(pp$q_med, nrow(pp)),
+          q_hi = .col(pp$q_hi, nrow(pp)),
+          job_id = job_id, stringsAsFactors = FALSE)
+      }
+
+      fd <- pop$fit_diag
+      if (!is.null(fd)) {
+        fitdiag_rows[[length(fitdiag_rows)+1L]] <- data.frame(
+          curve_id = cid_i, method = method, model_name = pop_model,
+          fit_seconds = .na(fd$fit_seconds), n_iterations = .na(fd$n_iterations),
+          converged = if (is.null(fd$converged)) NA else isTRUE(fd$converged),
+          fit_seed = .na(fd$fit_seed),
+          rhat_max = .na(fd$rhat_max), ess_bulk_min = .na(fd$ess_bulk_min),
+          ess_tail_min = .na(fd$ess_tail_min), n_divergent = .na(fd$n_divergent),
+          pct_divergent = .na(fd$pct_divergent), max_treedepth_hit = .na(fd$max_treedepth_hit),
+          ebfmi_min = .na(fd$ebfmi_min),
+          hessian_condition_number = .na(fd$hessian_condition_number),
+          gradient_norm = .na(fd$gradient_norm), optimizer_code = .na(fd$optimizer_code),
+          rel_tol_achieved = .na(fd$rel_tol_achieved),
+          job_id = job_id, stringsAsFactors = FALSE)
+      }
+
+      # draws: per-plate curve params (selected model's $draws) + population draws
+      cur_draws <- tryCatch(cr$ensemble[[pop_model]]$draws, error = function(z) NULL)
+      kind <- if (is_bayes) "posterior" else "mvn"
+      add_draws <- function(dl_list, scope) {
+        for (t in names(dl_list %||% list())) {
+          v <- as.numeric(dl_list[[t]])
+          if (!length(v)) next
+          draw_rows[[length(draw_rows)+1L]] <<- data.frame(
+            curve_id = cid_i, method = method, model_name = pop_model,
+            term = t, param_scope = scope, sample_kind = kind,
+            n_draws = length(v), job_id = job_id,
+            draws = I(list(v)), stringsAsFactors = FALSE)
+        }
+      }
+      add_draws(cur_draws, "curve")
+      add_draws(pop$draws, "population")
+    }
   }
 
   bind <- function(x) if (length(x)) do.call(rbind, x) else NULL
@@ -279,6 +335,8 @@ flatten_result <- function(mp, job_id, method = NULL) {
   list(run = run, fit = bind(fit_rows), param = bind(param_rows),
        gate = bind(gate_rows), grid = bind(grid_rows), samples = bind(samp_rows),
        diagnostics = bind(diag_rows), loo = bind(loo_rows),
+       hyperparam = bind(hyper_rows), fit_diag = bind(fitdiag_rows),
+       draws = bind(draw_rows),
        method = method,
        curve_ids = unique(vapply(names(plates), function(x) suppressWarnings(as.numeric(x)), numeric(1))))
 }
@@ -556,6 +614,11 @@ save_calib <- function(conn, flat, schema = "madi_results", verbose = TRUE) {
     .append(conn, schema, "calib_grid",        flat$grid)
     .append(conn, schema, "calib_samples",     flat$samples)
     .append(conn, schema, "calib_diagnostics", flat$diagnostics)
+    # schema-expansion tables (FK -> calib_fit ON DELETE CASCADE, so the
+    # calib_fit DELETE above already cleared any prior rows for these curves).
+    .append(conn, schema, "calib_hyperparam",  flat$hyperparam)
+    .append(conn, schema, "calib_fit_diag",    flat$fit_diag)
+    .append_draws(conn, schema, "calib_draws", flat$draws)
     .append(conn, schema, "calib_standards",   flat$standards)
     .append(conn, schema, "calib_blanks",      flat$blanks)
     TRUE
@@ -583,6 +646,27 @@ save_calib <- function(conn, flat, schema = "madi_results", verbose = TRUE) {
     DBI::dbQuoteLiteral(conn, schema), DBI::dbQuoteLiteral(conn, table)))$column_name
   keep <- intersect(names(df), cols)
   DBI::dbAppendTable(conn, DBI::Id(schema = schema, table = table), df[, keep, drop = FALSE])
+}
+
+# calib_draws carries a `draws` list-column (one numeric vector per row) that
+# must land in a Postgres double precision[] column. Rather than rely on the
+# driver serialising an R list-column to an array (behaviour varies by RPostgres
+# version), format each vector as an array literal and cast it explicitly. The
+# draws path is gated by persist_draws, so row volume here is bounded.
+.append_draws <- function(conn, schema, table, df) {
+  if (is.null(df) || !nrow(df)) return(invisible(0L))
+  sql <- sprintf(
+    "INSERT INTO %s.%s
+       (curve_id, method, model_name, term, param_scope, sample_kind, draws, n_draws, job_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7::double precision[],$8,$9)", schema, table)
+  for (i in seq_len(nrow(df))) {
+    v   <- as.numeric(df$draws[[i]])
+    lit <- paste0("{", paste(format(v, trim = TRUE, scientific = TRUE), collapse = ","), "}")
+    DBI::dbExecute(conn, sql, params = list(
+      as.numeric(df$curve_id[i]), df$method[i], df$model_name[i], df$term[i],
+      df$param_scope[i], df$sample_kind[i], lit, as.integer(df$n_draws[i]), df$job_id[i]))
+  }
+  invisible(nrow(df))
 }
 
 .upsert_run <- function(conn, schema, run) {
