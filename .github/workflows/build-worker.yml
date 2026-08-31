@@ -53,6 +53,23 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Resolve curveR refs to commit SHAs
+        id: refs
+        run: |
+          echo "### Resolved curveR refs (main -> SHA)" >> "$GITHUB_STEP_SUMMARY"
+          echo '| package | commit |' >> "$GITHUB_STEP_SUMMARY"
+          echo '| --- | --- |' >> "$GITHUB_STEP_SUMMARY"
+          for pkg in curveRcore curveRfreq curveRbayes curveRweights; do
+            sha=$(git ls-remote "https://github.com/immunoplex/$pkg.git" refs/heads/main | cut -f1)
+            if [ -z "$sha" ]; then
+              echo "::error::could not resolve main for $pkg (empty SHA) — is the repo private or renamed?"
+              exit 1
+            fi
+            echo "$pkg -> $sha"
+            echo "$pkg=$sha" >> "$GITHUB_OUTPUT"
+            echo "| $pkg | \`$sha\` |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v5
@@ -79,11 +96,10 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64
           build-args: |
-            CURVERCORE_REF=${{ env.CURVERCORE_REF }}
-            CURVERFREQ_REF=${{ env.CURVERFREQ_REF }}
-            CURVERBAYES_REF=${{ env.CURVERBAYES_REF }}
-            # CURVERBAYES_REF: 29fef4e99a42652f7e545a85f30a628a0be186a2
-            CURVERWEIGHTS_REF=${{ env.CURVERWEIGHTS_REF }}
+            CURVERCORE_REF=${{ steps.refs.outputs.curveRcore }}
+            CURVERFREQ_REF=${{ steps.refs.outputs.curveRfreq }}
+            CURVERBAYES_REF=${{ steps.refs.outputs.curveRbayes }}
+            CURVERWEIGHTS_REF=${{ steps.refs.outputs.curveRweights }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
