@@ -55,6 +55,15 @@ services:
     build:
       context: ./worker
       dockerfile: worker.Dockerfile
+      args:
+        # Mirrors the pins in build-worker.yml so local builds match CI.
+        # Override per-run without editing this file, e.g.:
+        #   CURVERBAYES_REF=main docker compose up --build
+        # or set these in your .env file.
+        CURVERCORE_REF: ${CURVERCORE_REF:-v0.4.1}
+        CURVERFREQ_REF: ${CURVERFREQ_REF:-v0.4.1}
+        CURVERBAYES_REF: ${CURVERBAYES_REF:-v0.4.1}
+        CURVERWEIGHTS_REF: ${CURVERWEIGHTS_REF:-main}
     environment:
       # Redis
       REDIS_HOST: i-spi-compute-redis

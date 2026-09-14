@@ -16,14 +16,19 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/i-spi-compute-worker
   # Per-package curveR pins (passed as --build-arg). The load-bearing trio is
-  # pinned to v0.4.0 release tags for reproducibility; curveRweights tracks main.
-  # PREREQUISITE: these tags must exist on the respective repos before this
-  # builds — curveRcore v0.4.0 (done), curveRbayes v0.4.0, and curveRfreq v0.4.0
-  # (tag its current main in lockstep). Set any to 'main' to track a branch
-  # instead of a tag.
-  CURVERCORE_REF: main
-  CURVERFREQ_REF: main
-  CURVERBAYES_REF: main
+  # pinned to v0.4.1 release tags for reproducibility (fixes the pcov_pass
+  # threshold bug -- see curveRcore/curveRfreq/curveRbayes NEWS.md);
+  # curveRweights tracks main. Set any to 'main' to track a branch instead of
+  # a tag.
+  #
+  # NOTE: the "Resolve curveR refs to commit SHAs" step below MUST actually
+  # read these vars per package. It previously hardcoded refs/heads/main for
+  # every package regardless of what's set here -- fixed 2026-09; if you're
+  # diffing against an older copy of this file, make sure that fix carried
+  # over too, or these pins are silently ignored again.
+  CURVERCORE_REF: v0.4.1
+  CURVERFREQ_REF: v0.4.1
+  CURVERBAYES_REF: v0.4.1
   CURVERWEIGHTS_REF: main
 
 jobs:
@@ -56,18 +61,38 @@ jobs:
       - name: Resolve curveR refs to commit SHAs
         id: refs
         run: |
-          echo "### Resolved curveR refs (main -> SHA)" >> "$GITHUB_STEP_SUMMARY"
-          echo '| package | commit |' >> "$GITHUB_STEP_SUMMARY"
-          echo '| --- | --- |' >> "$GITHUB_STEP_SUMMARY"
+          echo "### Resolved curveR refs (configured ref -> SHA)" >> "$GITHUB_STEP_SUMMARY"
+          echo '| package | ref | commit |' >> "$GITHUB_STEP_SUMMARY"
+          echo '| --- | --- | --- |' >> "$GITHUB_STEP_SUMMARY"
           for pkg in curveRcore curveRfreq curveRbayes curveRweights; do
-            sha=$(git ls-remote "https://github.com/immunoplex/$pkg.git" refs/heads/main | cut -f1)
-            if [ -z "$sha" ]; then
-              echo "::error::could not resolve main for $pkg (empty SHA) — is the repo private or renamed?"
+            # e.g. pkg=curveRcore -> ref_var=CURVERCORE_REF -> read that env var.
+            # (GitHub Actions exposes workflow-level `env:` entries as real
+            # shell env vars in `run:` steps, so this indirect expansion works.)
+            ref_var="${pkg^^}_REF"
+            ref="${!ref_var:-}"
+            if [ -z "$ref" ]; then
+              echo "::error::no ref configured for $pkg (expected env var $ref_var)"
               exit 1
             fi
-            echo "$pkg -> $sha"
+
+            repo="https://github.com/immunoplex/$pkg.git"
+            sha=""
+            # Try, in order: peeled annotated tag -> lightweight tag -> branch
+            # -> bare pattern match. This ensures annotated tags (git tag -a,
+            # which is what our release scripts create) resolve to the COMMIT
+            # they point to, not the tag object's own SHA.
+            for candidate in "refs/tags/${ref}^{}" "refs/tags/${ref}" "refs/heads/${ref}" "${ref}"; do
+              sha=$(git ls-remote "$repo" "$candidate" 2>/dev/null | awk '{print $1}' | head -n1)
+              [ -n "$sha" ] && break
+            done
+
+            if [ -z "$sha" ]; then
+              echo "::error::could not resolve ref '$ref' for $pkg (empty SHA) — does that tag/branch exist? is the repo private or renamed?"
+              exit 1
+            fi
+            echo "$pkg@$ref -> $sha"
             echo "$pkg=$sha" >> "$GITHUB_OUTPUT"
-            echo "| $pkg | \`$sha\` |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| $pkg | \`$ref\` | \`$sha\` |" >> "$GITHUB_STEP_SUMMARY"
           done
 
       - name: Extract metadata (tags, labels) for Docker
