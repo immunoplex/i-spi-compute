@@ -66,18 +66,27 @@ ENV CMDSTAN=/opt/cmdstan/current
 # cache-busts ONLY that layer (and the layers after it). force=TRUE additionally
 # guarantees the fitters are recompiled against the curveRcore just installed,
 # even when a DESCRIPTION Version string is unchanged.
-ARG CURVERCORE_REF=main
-ARG CURVERFREQ_REF=main
-ARG CURVERBAYES_REF=main
-# ARG CURVERBAYES_REF=curveRbayes@29fef4e
+ARG CURVERCORE_REF=v0.4.2
+ARG CURVERFREQ_REF=v0.4.2
+ARG CURVERBAYES_REF=v0.4.2
 ARG CURVERWEIGHTS_REF=main
 
 # curveRcore first — the fitters build against it.
-RUN R -e "remotes::install_github('immunoplex/curveRcore@${CURVERCORE_REF}', upgrade='never', force=TRUE)"
+# R's download.file() default timeout is 60s (getOption("timeout")). The
+# tarball transfer from codeload.github.com has been observed at ~670 KB/s
+# on this network path (34.5 MB in ~51s) -- slow but NOT broken. That sits
+# right at the edge of the 60s default, so installs fail intermittently
+# depending on momentary network conditions. Raise the timeout well above
+# the slowest observed transfer so a working-but-slow download isn't killed
+# prematurely. Does not fix the underlying slowness (likely proxy/DPI
+# throttling on large binary transfers) -- just stops it from masquerading
+# as a hard failure.
+RUN R -e "options(timeout = 300); remotes::install_github('immunoplex/curveRcore@${CURVERCORE_REF}', upgrade='never', force=TRUE)"
 
 # Fitters, each pinned, FORCED to rebuild against the curveRcore just installed.
 # curveRbayes compiles Stan; it stays after CmdStan (installed above).
 RUN R -e "message('installing fitters against curveRcore ', packageVersion('curveRcore')); \
+          options(timeout = 300); \
           remotes::install_github(c( \
             'immunoplex/curveRfreq@${CURVERFREQ_REF}', \
             'immunoplex/curveRbayes@${CURVERBAYES_REF}', \

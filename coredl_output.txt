@@ -1,0 +1,165 @@
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from curveRcore_download_diag.Dockerfile
+#1 transferring dockerfile: 4.28kB 0.0s done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/rocker/tidyverse:latest
+#2 DONE 0.6s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B 0.0s done
+#3 DONE 0.0s
+
+#4 [1/3] FROM docker.io/rocker/tidyverse:latest@sha256:94a4cdb7be4d1214f9039bca4937e8919253d2ad90d8bed084e9a8af685a50c7
+#4 CACHED
+
+#5 [2/3] RUN apt-get update && apt-get install -y --no-install-recommends       curl git ca-certificates     && rm -rf /var/lib/apt/lists/*
+#5 0.418 Get:1 http://archive.ubuntu.com/ubuntu noble InRelease [256 kB]
+#5 0.546 Get:2 http://security.ubuntu.com/ubuntu noble-security InRelease [126 kB]
+#5 0.609 Get:3 http://archive.ubuntu.com/ubuntu noble-updates InRelease [126 kB]
+#5 0.656 Get:4 http://archive.ubuntu.com/ubuntu noble-backports InRelease [126 kB]
+#5 0.708 Get:5 http://archive.ubuntu.com/ubuntu noble/restricted amd64 Packages [117 kB]
+#5 0.723 Get:6 http://archive.ubuntu.com/ubuntu noble/universe amd64 Packages [19.3 MB]
+#5 2.278 Get:7 http://archive.ubuntu.com/ubuntu noble/multiverse amd64 Packages [331 kB]
+#5 2.293 Get:8 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages [1,808 kB]
+#5 2.361 Get:9 http://archive.ubuntu.com/ubuntu noble-updates/multiverse amd64 Packages [56.2 kB]
+#5 2.363 Get:10 http://archive.ubuntu.com/ubuntu noble-updates/universe amd64 Packages [2,146 kB]
+#5 2.491 Get:11 http://archive.ubuntu.com/ubuntu noble-updates/restricted amd64 Packages [1,922 kB]
+#5 2.515 Get:12 http://security.ubuntu.com/ubuntu noble-security/main amd64 Packages [1,242 kB]
+#5 2.751 Get:13 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages [1,566 kB]
+#5 2.893 Get:14 http://archive.ubuntu.com/ubuntu noble-backports/main amd64 Packages [48.9 kB]
+#5 2.897 Get:15 http://archive.ubuntu.com/ubuntu noble-backports/universe amd64 Packages [35.9 kB]
+#5 2.899 Get:16 http://archive.ubuntu.com/ubuntu noble-backports/multiverse amd64 Packages [671 B]
+#5 3.174 Get:17 http://security.ubuntu.com/ubuntu noble-security/restricted amd64 Packages [1,796 kB]
+#5 3.339 Get:18 http://security.ubuntu.com/ubuntu noble-security/universe amd64 Packages [1,532 kB]
+#5 3.440 Get:19 http://security.ubuntu.com/ubuntu noble-security/multiverse amd64 Packages [50.0 kB]
+#5 3.499 Fetched 32.6 MB in 3s (10.0 MB/s)
+#5 3.499 Reading package lists...
+#5 4.268 Reading package lists...
+#5 5.039 Building dependency tree...
+#5 5.298 Reading state information...
+#5 5.607 git is already the newest version (1:2.43.0-1ubuntu7.3).
+#5 5.607 ca-certificates is already the newest version (20260601~24.04.1).
+#5 5.607 The following NEW packages will be installed:
+#5 5.608   curl
+#5 5.923 0 upgraded, 1 newly installed, 0 to remove and 5 not upgraded.
+#5 5.923 Need to get 226 kB of archives.
+#5 5.923 After this operation, 536 kB of additional disk space will be used.
+#5 5.923 Get:1 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 curl amd64 8.5.0-2ubuntu10.13 [226 kB]
+#5 6.314 debconf: delaying package configuration, since apt-utils is not installed
+#5 6.356 Fetched 226 kB in 1s (420 kB/s)
+#5 6.385 Selecting previously unselected package curl.
+#5 6.385 (Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 27359 files and directories currently installed.)
+#5 6.401 Preparing to unpack .../curl_8.5.0-2ubuntu10.13_amd64.deb ...
+#5 6.405 Unpacking curl (8.5.0-2ubuntu10.13) ...
+#5 6.444 Setting up curl (8.5.0-2ubuntu10.13) ...
+#5 DONE 6.5s
+
+#6 [3/3] RUN set +e;     {     echo "=== 0. confirm the tag exists on the remote and what commit it peels to ===";     git ls-remote --tags https://github.com/immunoplex/curveRcore.git "v0.4.2" "v0.4.2^{}";     echo;         echo "=== 1. repeated tarball download (3x) via the exact URL remotes::install_github() uses ===";     echo "     checking: does it complete every time, and is the content IDENTICAL each time?";     URL="https://api.github.com/repos/immunoplex/curveRcore/tarball/v0.4.2";     for i in 1 2 3; do       echo "--- attempt $i ---";       START=$(date +%s);       curl -L -o "/tmp/tarball_$i.tar.gz" -s --max-time 120 -w         "  http_code=%{http_code} size_bytes=%{size_download} total_time=%{time_total}s\n"         "$URL";       RC=$?;       END=$(date +%s);       echo "  curl exit code: $RC   wall time: $((END-START))s";       if [ -f "/tmp/tarball_$i.tar.gz" ]; then         echo -n "  gzip integrity: "; gzip -t "/tmp/tarball_$i.tar.gz" 2>&1 && echo OK;         echo "  md5sum: $(md5sum /tmp/tarball_$i.tar.gz)";         echo "  tar contents (first 5 entries): ";         tar -tzf "/tmp/tarball_$i.tar.gz" 2>&1 | head -5;       else         echo "  NO FILE WRITTEN";       fi;       echo;     done;     echo "--- comparing all 3 checksums (should be 3 identical lines if the tarball is stable) ---";     md5sum /tmp/tarball_*.tar.gz 2>/dev/null;     echo;         echo "=== 2. alternate transport: git clone --depth 1 --branch (bypasses tarball API entirely) ===";     START=$(date +%s);     timeout 60 git clone --depth 1 --branch "v0.4.2"       https://github.com/immunoplex/curveRcore.git /tmp/core_clone 2>&1;     RC=$?;     END=$(date +%s);     echo "  git clone exit code: $RC   wall time: $((END-START))s";     if [ -f /tmp/core_clone/DESCRIPTION ]; then       echo "  DESCRIPTION found. Version line:";       grep '^Version:' /tmp/core_clone/DESCRIPTION;     else       echo "  DESCRIPTION NOT FOUND -- clone did not produce a usable package dir";     fi;     echo;         echo "=== 3. the REAL remotes::install_github() call, default timeout, FULL error detail ===";     R -e "tryCatch({             remotes::install_github('immunoplex/curveRcore@v0.4.2', upgrade='never', force=TRUE);             cat('SUCCESS: curveRcore', as.character(packageVersion('curveRcore')), 'installed\n');           }, error = function(e) {             cat('FAILURE. Full condition object:\n');             print(e);             cat('\nclass(e):', paste(class(e), collapse=', '), '\n');           })" 2>&1;     echo;     echo "=== DONE ===";     } > /diag.log 2>&1;     cat /diag.log
+#6 59.29 === 0. confirm the tag exists on the remote and what commit it peels to ===
+#6 59.29 8171b0d1e368ca7925e104d2079f2ca9916f0142	refs/tags/v0.4.2
+#6 59.29 2a45a48f30351078fb45c000c54dce061d384994	refs/tags/v0.4.2^{}
+#6 59.29 
+#6 59.29 === 1. repeated tarball download (3x) via the exact URL remotes::install_github() uses ===
+#6 59.29      checking: does it complete every time, and is the content IDENTICAL each time?
+#6 59.29 --- attempt 1 ---
+#6 59.29   http_code=200 size_bytes=34494630 total_time=9.276336s
+#6 59.29   curl exit code: 0   wall time: 9s
+#6 59.29   gzip integrity: OK
+#6 59.29   md5sum: 8f7dcf78779540bd420bfdf0a84b9a05  /tmp/tarball_1.tar.gz
+#6 59.29   tar contents (first 5 entries): 
+#6 59.29 immunoplex-curveRcore-8171b0d/
+#6 59.29 immunoplex-curveRcore-8171b0d/.RData
+#6 59.29 immunoplex-curveRcore-8171b0d/.RData.bak
+#6 59.29 immunoplex-curveRcore-8171b0d/.Rbuildignore
+#6 59.29 immunoplex-curveRcore-8171b0d/.Rhistory
+#6 59.29 
+#6 59.29 --- attempt 2 ---
+#6 59.29   http_code=200 size_bytes=34494630 total_time=15.172281s
+#6 59.29   curl exit code: 0   wall time: 15s
+#6 59.29   gzip integrity: OK
+#6 59.29   md5sum: 8f7dcf78779540bd420bfdf0a84b9a05  /tmp/tarball_2.tar.gz
+#6 59.29   tar contents (first 5 entries): 
+#6 59.29 immunoplex-curveRcore-8171b0d/
+#6 59.29 immunoplex-curveRcore-8171b0d/.RData
+#6 59.29 immunoplex-curveRcore-8171b0d/.RData.bak
+#6 59.29 immunoplex-curveRcore-8171b0d/.Rbuildignore
+#6 59.29 immunoplex-curveRcore-8171b0d/.Rhistory
+#6 59.29 
+#6 59.29 --- attempt 3 ---
+#6 59.29   http_code=200 size_bytes=34494630 total_time=15.935982s
+#6 59.29   curl exit code: 0   wall time: 16s
+#6 59.29   gzip integrity: OK
+#6 59.29   md5sum: 8f7dcf78779540bd420bfdf0a84b9a05  /tmp/tarball_3.tar.gz
+#6 59.29   tar contents (first 5 entries): 
+#6 59.29 immunoplex-curveRcore-8171b0d/
+#6 59.29 immunoplex-curveRcore-8171b0d/.RData
+#6 59.29 immunoplex-curveRcore-8171b0d/.RData.bak
+#6 59.29 immunoplex-curveRcore-8171b0d/.Rbuildignore
+#6 59.29 immunoplex-curveRcore-8171b0d/.Rhistory
+#6 59.29 
+#6 59.29 --- comparing all 3 checksums (should be 3 identical lines if the tarball is stable) ---
+#6 59.29 8f7dcf78779540bd420bfdf0a84b9a05  /tmp/tarball_1.tar.gz
+#6 59.29 8f7dcf78779540bd420bfdf0a84b9a05  /tmp/tarball_2.tar.gz
+#6 59.29 8f7dcf78779540bd420bfdf0a84b9a05  /tmp/tarball_3.tar.gz
+#6 59.29 
+#6 59.29 === 2. alternate transport: git clone --depth 1 --branch (bypasses tarball API entirely) ===
+#6 59.29 Cloning into '/tmp/core_clone'...
+#6 59.29 Note: switching to '2a45a48f30351078fb45c000c54dce061d384994'.
+#6 59.29 
+#6 59.29 You are in 'detached HEAD' state. You can look around, make experimental
+#6 59.29 changes and commit them, and you can discard any commits you make in this
+#6 59.29 state without impacting any branches by switching back to a branch.
+#6 59.29 
+#6 59.29 If you want to create a new branch to retain commits you create, you may
+#6 59.29 do so (now or later) by using -c with the switch command. Example:
+#6 59.29 
+#6 59.29   git switch -c <new-branch-name>
+#6 59.29 
+#6 59.29 Or undo this operation with:
+#6 59.29 
+#6 59.29   git switch -
+#6 59.29 
+#6 59.29 Turn off this advice by setting config variable advice.detachedHead to false
+#6 59.29 
+#6 59.29   git clone exit code: 0   wall time: 16s
+#6 59.29   DESCRIPTION found. Version line:
+#6 59.29 Version: 0.4.2
+#6 59.29 
+#6 59.29 === 3. the REAL remotes::install_github() call, default timeout, FULL error detail ===
+#6 59.29 
+#6 59.29 R version 4.6.1 (2026-06-24) -- "Happy Hop"
+#6 59.29 Copyright (C) 2026 The R Foundation for Statistical Computing
+#6 59.29 Platform: x86_64-pc-linux-gnu
+#6 59.29 
+#6 59.29 R is free software and comes with ABSOLUTELY NO WARRANTY.
+#6 59.29 You are welcome to redistribute it under certain conditions.
+#6 59.29 Type 'license()' or 'licence()' for distribution details.
+#6 59.29 
+#6 59.29   Natural language support but running in an English locale
+#6 59.29 
+#6 59.29 R is a collaborative project with many contributors.
+#6 59.29 Type 'contributors()' for more information and
+#6 59.29 'citation()' on how to cite R or R packages in publications.
+#6 59.29 
+#6 59.29 Type 'demo()' for some demos, 'help()' for on-line help, or
+#6 59.29 'help.start()' for an HTML browser interface to help.
+#6 59.29 Type 'q()' to quit R.
+#6 59.29 
+#6 59.29 > tryCatch({             remotes::install_github('immunoplex/curveRcore@v0.4.2', upgrade='never', force=TRUE);             cat('SUCCESS: curveRcore', as.character(packageVersion('curveRcore')), 'installed\n');           }, error = function(e) {             cat('FAILURE. Full condition object:\n');             print(e);             cat('\nclass(e):', paste(class(e), collapse=', '), '\n');           })
+#6 59.29 FAILURE. Full condition object:
+#6 59.29 <packageNotFoundError in loadNamespace(x): there is no package called ‘remotes’>
+#6 59.29 
+#6 59.29 class(e): packageNotFoundError, error, condition 
+#6 59.29 > 
+#6 59.29 
+#6 59.29 === DONE ===
+#6 DONE 59.4s
+
+#7 exporting to image
+#7 exporting layers
+#7 exporting layers 0.4s done
+#7 writing image sha256:7e66dafd4a15bc1b6b3b74d971a93fd11317b4c7744a250c84e15d04136f64fb done
+#7 naming to docker.io/library/coredl done
+#7 DONE 0.4s

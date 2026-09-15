@@ -1,0 +1,205 @@
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from network_diag.Dockerfile
+#1 transferring dockerfile: 3.37kB 0.0s done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/rocker/tidyverse:latest
+#2 DONE 1.5s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [1/3] FROM docker.io/rocker/tidyverse:latest@sha256:94a4cdb7be4d1214f9039bca4937e8919253d2ad90d8bed084e9a8af685a50c7
+#4 CACHED
+
+#5 [2/3] RUN apt-get update && apt-get install -y --no-install-recommends       curl dnsutils iputils-ping ca-certificates     && rm -rf /var/lib/apt/lists/*
+#5 2.723 Get:1 http://archive.ubuntu.com/ubuntu noble InRelease [256 kB]
+#5 2.824 Get:2 http://security.ubuntu.com/ubuntu noble-security InRelease [126 kB]
+#5 12.48 Get:3 http://security.ubuntu.com/ubuntu noble-security/restricted amd64 Packages [1,796 kB]
+#5 15.76 Get:4 http://archive.ubuntu.com/ubuntu noble-updates InRelease [126 kB]
+#5 17.33 Get:5 http://archive.ubuntu.com/ubuntu noble-backports InRelease [126 kB]
+#5 18.35 Get:6 http://archive.ubuntu.com/ubuntu noble/multiverse amd64 Packages [331 kB]
+#5 20.42 Get:7 http://archive.ubuntu.com/ubuntu noble/universe amd64 Packages [19.3 MB]
+#5 26.42 Get:8 http://security.ubuntu.com/ubuntu noble-security/universe amd64 Packages [1,532 kB]
+#5 48.36 Get:9 http://security.ubuntu.com/ubuntu noble-security/multiverse amd64 Packages [50.0 kB]
+#5 48.61 Get:10 http://security.ubuntu.com/ubuntu noble-security/main amd64 Packages [1,242 kB]
+#5 107.1 Ign:7 http://archive.ubuntu.com/ubuntu noble/universe amd64 Packages
+#5 108.4 Get:11 http://archive.ubuntu.com/ubuntu noble/restricted amd64 Packages [117 kB]
+#5 111.5 Get:12 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages [1,808 kB]
+#5 160.3 Get:13 http://archive.ubuntu.com/ubuntu noble-updates/restricted amd64 Packages [1,922 kB]
+#5 162.8 Get:14 http://archive.ubuntu.com/ubuntu noble-updates/universe amd64 Packages [2,146 kB]
+#5 166.7 Get:15 http://archive.ubuntu.com/ubuntu noble-updates/multiverse amd64 Packages [56.2 kB]
+#5 166.9 Get:16 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages [1,566 kB]
+#5 168.7 Get:17 http://archive.ubuntu.com/ubuntu noble-backports/multiverse amd64 Packages [671 B]
+#5 168.8 Get:18 http://archive.ubuntu.com/ubuntu noble-backports/universe amd64 Packages [35.9 kB]
+#5 169.0 Get:19 http://archive.ubuntu.com/ubuntu noble-backports/main amd64 Packages [48.9 kB]
+#5 169.3 Get:7 http://archive.ubuntu.com/ubuntu noble/universe amd64 Packages [19.3 MB]
+#5 211.9 Fetched 25.3 MB in 3min 31s (120 kB/s)
+#5 211.9 Reading package lists...
+#5 213.3 Reading package lists...
+#5 214.6 Building dependency tree...
+#5 214.9 Reading state information...
+#5 215.3 ca-certificates is already the newest version (20260601~24.04.1).
+#5 215.3 The following additional packages will be installed:
+#5 215.3   bind9-dnsutils bind9-host bind9-libs libcap2-bin libjson-c5 liblmdb0
+#5 215.3   libmaxminddb0
+#5 215.3 Suggested packages:
+#5 215.3   mmdb-bin
+#5 215.3 Recommended packages:
+#5 215.3   libpam-cap
+#5 215.3 The following NEW packages will be installed:
+#5 215.3   bind9-dnsutils bind9-host bind9-libs curl dnsutils iputils-ping libcap2-bin
+#5 215.3   libjson-c5 liblmdb0 libmaxminddb0
+#5 217.1 0 upgraded, 10 newly installed, 0 to remove and 5 not upgraded.
+#5 217.1 Need to get 1,884 kB of archives.
+#5 217.1 After this operation, 5,340 kB of additional disk space will be used.
+#5 217.1 Get:1 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 libcap2-bin amd64 1:2.66-5ubuntu2.4 [34.1 kB]
+#5 217.3 Get:2 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 iputils-ping amd64 3:20240117-1ubuntu0.1 [44.6 kB]
+#5 217.6 Get:3 http://archive.ubuntu.com/ubuntu noble/main amd64 libjson-c5 amd64 0.17-1build1 [35.3 kB]
+#5 217.8 Get:4 http://archive.ubuntu.com/ubuntu noble/main amd64 liblmdb0 amd64 0.9.31-1build1 [48.1 kB]
+#5 218.1 Get:5 http://archive.ubuntu.com/ubuntu noble/main amd64 libmaxminddb0 amd64 1.9.1-1build1 [24.4 kB]
+#5 218.1 Get:6 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 bind9-libs amd64 1:9.18.39-0ubuntu0.24.04.7 [1,261 kB]
+#5 219.8 Get:7 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 bind9-host amd64 1:9.18.39-0ubuntu0.24.04.7 [50.5 kB]
+#5 220.7 Get:8 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 bind9-dnsutils amd64 1:9.18.39-0ubuntu0.24.04.7 [156 kB]
+#5 220.7 Get:9 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 curl amd64 8.5.0-2ubuntu10.13 [226 kB]
+#5 220.7 Get:10 http://archive.ubuntu.com/ubuntu noble-updates/universe amd64 dnsutils all 1:9.18.39-0ubuntu0.24.04.7 [3,686 B]
+#5 221.0 debconf: delaying package configuration, since apt-utils is not installed
+#5 221.0 Fetched 1,884 kB in 5s (353 kB/s)
+#5 221.1 Selecting previously unselected package libcap2-bin.
+#5 221.1 (Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 27359 files and directories currently installed.)
+#5 221.2 Preparing to unpack .../0-libcap2-bin_1%3a2.66-5ubuntu2.4_amd64.deb ...
+#5 221.2 Unpacking libcap2-bin (1:2.66-5ubuntu2.4) ...
+#5 221.3 Selecting previously unselected package iputils-ping.
+#5 221.3 Preparing to unpack .../1-iputils-ping_3%3a20240117-1ubuntu0.1_amd64.deb ...
+#5 221.3 Unpacking iputils-ping (3:20240117-1ubuntu0.1) ...
+#5 221.3 Selecting previously unselected package libjson-c5:amd64.
+#5 221.4 Preparing to unpack .../2-libjson-c5_0.17-1build1_amd64.deb ...
+#5 221.4 Unpacking libjson-c5:amd64 (0.17-1build1) ...
+#5 221.4 Selecting previously unselected package liblmdb0:amd64.
+#5 221.4 Preparing to unpack .../3-liblmdb0_0.9.31-1build1_amd64.deb ...
+#5 221.4 Unpacking liblmdb0:amd64 (0.9.31-1build1) ...
+#5 221.5 Selecting previously unselected package libmaxminddb0:amd64.
+#5 221.5 Preparing to unpack .../4-libmaxminddb0_1.9.1-1build1_amd64.deb ...
+#5 221.5 Unpacking libmaxminddb0:amd64 (1.9.1-1build1) ...
+#5 221.5 Selecting previously unselected package bind9-libs:amd64.
+#5 221.5 Preparing to unpack .../5-bind9-libs_1%3a9.18.39-0ubuntu0.24.04.7_amd64.deb ...
+#5 221.5 Unpacking bind9-libs:amd64 (1:9.18.39-0ubuntu0.24.04.7) ...
+#5 221.6 Selecting previously unselected package bind9-host.
+#5 221.6 Preparing to unpack .../6-bind9-host_1%3a9.18.39-0ubuntu0.24.04.7_amd64.deb ...
+#5 221.6 Unpacking bind9-host (1:9.18.39-0ubuntu0.24.04.7) ...
+#5 221.7 Selecting previously unselected package bind9-dnsutils.
+#5 221.7 Preparing to unpack .../7-bind9-dnsutils_1%3a9.18.39-0ubuntu0.24.04.7_amd64.deb ...
+#5 221.7 Unpacking bind9-dnsutils (1:9.18.39-0ubuntu0.24.04.7) ...
+#5 221.8 Selecting previously unselected package curl.
+#5 221.8 Preparing to unpack .../8-curl_8.5.0-2ubuntu10.13_amd64.deb ...
+#5 221.8 Unpacking curl (8.5.0-2ubuntu10.13) ...
+#5 221.8 Selecting previously unselected package dnsutils.
+#5 221.8 Preparing to unpack .../9-dnsutils_1%3a9.18.39-0ubuntu0.24.04.7_all.deb ...
+#5 221.8 Unpacking dnsutils (1:9.18.39-0ubuntu0.24.04.7) ...
+#5 221.9 Setting up liblmdb0:amd64 (0.9.31-1build1) ...
+#5 221.9 Setting up libmaxminddb0:amd64 (1.9.1-1build1) ...
+#5 221.9 Setting up libcap2-bin (1:2.66-5ubuntu2.4) ...
+#5 222.0 Setting up curl (8.5.0-2ubuntu10.13) ...
+#5 222.0 Setting up iputils-ping (3:20240117-1ubuntu0.1) ...
+#5 222.0 Setting up libjson-c5:amd64 (0.17-1build1) ...
+#5 222.0 Setting up bind9-libs:amd64 (1:9.18.39-0ubuntu0.24.04.7) ...
+#5 222.0 Setting up bind9-host (1:9.18.39-0ubuntu0.24.04.7) ...
+#5 222.0 Setting up bind9-dnsutils (1:9.18.39-0ubuntu0.24.04.7) ...
+#5 222.1 Setting up dnsutils (1:9.18.39-0ubuntu0.24.04.7) ...
+#5 222.1 Processing triggers for libc-bin (2.39-0ubuntu8.9) ...
+#5 DONE 222.3s
+
+#6 [3/3] RUN set +e;     echo "=== env proxy vars (should be non-empty if you passed --build-arg) ===";     echo "HTTP_PROXY=  HTTPS_PROXY=  NO_PROXY=";     echo;     echo "=== DNS resolution ===";     for h in github.com api.github.com codeload.github.com; do       echo "--- $h ---"; getent hosts "$h" || echo "DNS FAILED for $h";     done;     echo;     echo "=== TCP connect on 443 (5s timeout each) ===";     for h in github.com api.github.com codeload.github.com; do       echo -n "$h:443 -> ";       timeout 5 bash -c "echo > /dev/tcp/$h/443" 2>/dev/null && echo OK || echo "TIMED OUT / REFUSED";     done;     echo;     echo "=== curl -v HEAD on the exact tarball URL that fails in the real build (15s timeout) ===";     timeout 15 curl -v -I --max-time 12       "https://api.github.com/repos/immunoplex/curveRcore/tarball/v0.4.2"       2>&1 | tail -40;     echo;     echo "=== curl -v HEAD on plain github.com (control -- does ANY github host work?) ===";     timeout 15 curl -v -I --max-time 12 "https://github.com" 2>&1 | tail -20;     echo;     echo "=== curl timing breakdown (dns/connect/tls/total) on the failing URL ===";     curl -o /dev/null -s --max-time 12 -w       "dns_resolve=%{time_namelookup}s connect=%{time_connect}s tls_handshake=%{time_appconnect}s total=%{time_total}s http_code=%{http_code}\n"       "https://api.github.com/repos/immunoplex/curveRcore/tarball/v0.4.2"       || echo "curl itself failed/timed out -- see verbose block above for where";     echo;     echo "=== DONE -- read from the top; first failing section tells you the layer ===";     true
+#6 0.361 === env proxy vars (should be non-empty if you passed --build-arg) ===
+#6 0.361 HTTP_PROXY=  HTTPS_PROXY=  NO_PROXY=
+#6 0.361 
+#6 0.361 === DNS resolution ===
+#6 0.361 --- github.com ---
+#6 1.080 140.82.112.3    github.com
+#6 1.081 --- api.github.com ---
+#6 1.446 140.82.112.6    api.github.com
+#6 1.447 --- codeload.github.com ---
+#6 1.669 140.82.114.9    codeload.github.com
+#6 1.669 
+#6 1.669 === TCP connect on 443 (5s timeout each) ===
+#6 1.669 github.com:443 -> OK
+#6 1.901 api.github.com:443 -> OK
+#6 2.124 codeload.github.com:443 -> OK
+#6 2.435 
+#6 2.435 === curl -v HEAD on the exact tarball URL that fails in the real build (15s timeout) ===
+#6 3.340 < access-control-allow-origin: *
+#6 3.340 < strict-transport-security: max-age=31536000; includeSubdomains; preload
+#6 3.340 < x-frame-options: deny
+#6 3.340 < x-content-type-options: nosniff
+#6 3.340 < x-xss-protection: 0
+#6 3.340 < referrer-policy: origin-when-cross-origin, strict-origin-when-cross-origin
+#6 3.340 < content-security-policy: default-src 'none'
+#6 3.340 < vary: Accept-Encoding, Accept, X-Requested-With
+#6 3.340 < server: github.com
+#6 3.340 < x-github-request-id: D223:6968E:6555D8:15276CE:6AA96682
+#6 3.340 < x-github-edge-region: iad
+#6 3.340 < 
+#6 3.340   0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+#6 3.340 * Connection #0 to host api.github.com left intact
+#6 3.340 HTTP/2 302 
+#6 3.340 date: Tue, 15 Sep 2026 15:38:43 GMT
+#6 3.340 content-type: text/html;charset=utf-8
+#6 3.340 content-length: 0
+#6 3.340 cache-control: public, must-revalidate, max-age=0
+#6 3.340 expires: Tue, 15 Sep 2026 15:38:43 GMT
+#6 3.340 location: https://codeload.github.com/immunoplex/curveRcore/legacy.tar.gz/refs/tags/v0.4.2
+#6 3.340 x-github-api-version-selected: 2022-11-28
+#6 3.340 x-ratelimit-limit: 60
+#6 3.340 x-ratelimit-remaining: 60
+#6 3.340 x-ratelimit-reset: 1789490323
+#6 3.340 x-ratelimit-used: 0
+#6 3.340 x-ratelimit-resource: core
+#6 3.340 access-control-expose-headers: ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, Deprecation, Sunset, Warning
+#6 3.340 access-control-allow-origin: *
+#6 3.340 strict-transport-security: max-age=31536000; includeSubdomains; preload
+#6 3.340 x-frame-options: deny
+#6 3.340 x-content-type-options: nosniff
+#6 3.340 x-xss-protection: 0
+#6 3.340 referrer-policy: origin-when-cross-origin, strict-origin-when-cross-origin
+#6 3.340 content-security-policy: default-src 'none'
+#6 3.340 vary: Accept-Encoding, Accept, X-Requested-With
+#6 3.340 server: github.com
+#6 3.340 x-github-request-id: D223:6968E:6555D8:15276CE:6AA96682
+#6 3.340 x-github-edge-region: iad
+#6 3.340 
+#6 3.340 
+#6 3.340 === curl -v HEAD on plain github.com (control -- does ANY github host work?) ===
+#6 4.039 referrer-policy: origin-when-cross-origin, strict-origin-when-cross-origin
+#6 4.039 content-security-policy: default-src 'none'; base-uri 'self'; child-src github.githubassets.com github.com/assets-cdn/worker/ github.com/assets/ gist.github.com/assets-cdn/worker/; connect-src 'self' uploads.github.com www.githubstatus.com collector.github.com raw.githubusercontent.com api.github.com github-cloud.s3.amazonaws.com github-production-repository-file-5c1aeb.s3.amazonaws.com github-production-upload-manifest-file-7fdce7.s3.amazonaws.com github-production-user-asset-6210df.s3.amazonaws.com *.rel.tunnels.api.visualstudio.com wss://*.rel.tunnels.api.visualstudio.com github.githubassets.com objects-origin.githubusercontent.com copilot-proxy.githubusercontent.com proxy.individual.githubcopilot.com proxy.business.githubcopilot.com proxy.enterprise.githubcopilot.com *.actions.githubusercontent.com wss://*.actions.githubusercontent.com productionresultssa0.blob.core.windows.net productionresultssa1.blob.core.windows.net productionresultssa2.blob.core.windows.net productionresultssa3.blob.core.windows.net productionresultssa4.blob.core.windows.net productionresultssa5.blob.core.windows.net productionresultssa6.blob.core.windows.net productionresultssa7.blob.core.windows.net productionresultssa8.blob.core.windows.net productionresultssa9.blob.core.windows.net productionresultssa10.blob.core.windows.net productionresultssa11.blob.core.windows.net productionresultssa12.blob.core.windows.net productionresultssa13.blob.core.windows.net productionresultssa14.blob.core.windows.net productionresultssa15.blob.core.windows.net productionresultssa16.blob.core.windows.net productionresultssa17.blob.core.windows.net productionresultssa18.blob.core.windows.net productionresultssa19.blob.core.windows.net github-production-repository-image-32fea6.s3.amazonaws.com github-production-release-asset-2e65be.s3.amazonaws.com insights.github.com wss://alive.github.com wss://alive-staging.github.com api.githubcopilot.com api.individual.githubcopilot.com api.business.githubcopilot.com api.enterprise.githubcopilot.com wss://production-copilot-host.webpubsub.azure.com edge.fullstory.com rs.fullstory.com; font-src github.githubassets.com; form-action 'self' github.com gist.github.com copilot-workspace.githubnext.com objects-origin.githubusercontent.com; frame-ancestors 'none'; frame-src viewscreen.githubusercontent.com notebooks.githubusercontent.com www.youtube-nocookie.com; img-src 'self' data: blob: github.githubassets.com media.githubusercontent.com camo.githubusercontent.com identicons.github.com avatars.githubusercontent.com private-avatars.githubusercontent.com github-cloud.s3.amazonaws.com objects.githubusercontent.com release-assets.githubusercontent.com secured-user-images.githubusercontent.com user-images.githubusercontent.com private-user-images.githubusercontent.com opengraph.githubassets.com repository-images.githubusercontent.com marketplace-screenshots.githubusercontent.com copilotprodattachments.blob.core.windows.net/github-production-copilot-attachments/ github-production-user-asset-6210df.s3.amazonaws.com customer-stories-feed.github.com spotlights-feed.github.com explore-feed.github.com objects-origin.githubusercontent.com *.githubusercontent.com images.ctfassets.net/8aevphvgewt8/; manifest-src 'self'; media-src github.com user-images.githubusercontent.com secured-user-images.githubusercontent.com private-user-images.githubusercontent.com github-production-user-asset-6210df.s3.amazonaws.com gist.github.com github.githubassets< server: github.com
+#6 4.039 < accept-ranges: bytes
+#6 4.039 < set-cookie: _gh_sess=i5AQ7GVUXRIQ00Fy5rhXjE3QWDjNklAE63OpgdlrjKLsPF3nJtsE9DJHQ%2FaGltk%2BsNlnNhVT3xU6son6ZTr1jUU8v7pixe00bZXvZZBMxoJ6N73PuY66V3qcSTE0n54oJSD6NwUmDENVqNfQtLYg5p8a6VowLRjdtzZotn1iNHKlq1DOXJW%2FAqeqEpKav4g7ZJhPqwVFYlTbTzuNJS1SWOXMWJoV3svXXn0uWxcFVI%2F1vEFbl%2FcCKQ0j%2BA8LdKzvgpaQ5JjiVFOiLEeb5To8Dg%3D%3D--MhYXhAWyD6bSXaR%2B--k3PQyyjVwZCDJaUDTIpM4A%3D%3D; path=/; HttpOnly; secure; SameSite=Lax
+#6 4.039 < set-cookie: _octo=GH1.1.1083129805.1789486723; expires=Wed, 15 Sep 2027 15:38:43 GMT; domain=.github.com; path=/; secure; SameSite=Lax
+#6 4.039 < set-cookie: logged_in=no; expires=Wed, 15 Sep 2027 15:38:43 GMT; domain=.github.com; path=/; HttpOnly; secure; SameSite=Lax
+#6 4.039 < x-github-request-id: D201:121699:467BDC:5D5E49:6AA96683
+#6 4.039 < x-github-edge-region: iad
+#6 4.039 < 
+#6 4.039   0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+#6 4.039 * Connection #0 to host github.com left intact
+#6 4.039 .com assets.ctfassets.net/8aevphvgewt8/ videos.ctfassets.net/8aevphvgewt8/; script-src github.githubassets.com 'sha256-tSjmyPUky1KbRZ0fw9VUil3wFEbeM82rtbJDygGJAXw='; style-src 'unsafe-inline' github.githubassets.com; upgrade-insecure-requests; worker-src github.githubassets.com github.com/assets-cdn/worker/ github.com/assets/ gist.github.com/assets-cdn/worker/
+#6 4.039 server: github.com
+#6 4.039 accept-ranges: bytes
+#6 4.039 set-cookie: _gh_sess=i5AQ7GVUXRIQ00Fy5rhXjE3QWDjNklAE63OpgdlrjKLsPF3nJtsE9DJHQ%2FaGltk%2BsNlnNhVT3xU6son6ZTr1jUU8v7pixe00bZXvZZBMxoJ6N73PuY66V3qcSTE0n54oJSD6NwUmDENVqNfQtLYg5p8a6VowLRjdtzZotn1iNHKlq1DOXJW%2FAqeqEpKav4g7ZJhPqwVFYlTbTzuNJS1SWOXMWJoV3svXXn0uWxcFVI%2F1vEFbl%2FcCKQ0j%2BA8LdKzvgpaQ5JjiVFOiLEeb5To8Dg%3D%3D--MhYXhAWyD6bSXaR%2B--k3PQyyjVwZCDJaUDTIpM4A%3D%3D; path=/; HttpOnly; secure; SameSite=Lax
+#6 4.039 set-cookie: _octo=GH1.1.1083129805.1789486723; expires=Wed, 15 Sep 2027 15:38:43 GMT; domain=.github.com; path=/; secure; SameSite=Lax
+#6 4.039 set-cookie: logged_in=no; expires=Wed, 15 Sep 2027 15:38:43 GMT; domain=.github.com; path=/; HttpOnly; secure; SameSite=Lax
+#6 4.039 x-github-request-id: D201:121699:467BDC:5D5E49:6AA96683
+#6 4.039 x-github-edge-region: iad
+#6 4.039 
+#6 4.039 
+#6 4.039 === curl timing breakdown (dns/connect/tls/total) on the failing URL ===
+#6 4.750 dns_resolve=0.004945s connect=0.179967s tls_handshake=0.368236s total=0.701583s http_code=302
+#6 4.751 
+#6 4.751 === DONE -- read from the top; first failing section tells you the layer ===
+#6 DONE 4.8s
+
+#7 exporting to image
+#7 exporting layers 0.1s done
+#7 writing image sha256:076920e1e141b99c895ff5bab0fe0333982e1af93a1b21325248e222e66fc527 done
+#7 naming to docker.io/library/netdiag done
+#7 DONE 0.1s

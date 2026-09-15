@@ -26,9 +26,9 @@ env:
   # every package regardless of what's set here -- fixed 2026-09; if you're
   # diffing against an older copy of this file, make sure that fix carried
   # over too, or these pins are silently ignored again.
-  CURVERCORE_REF: v0.4.1
-  CURVERFREQ_REF: v0.4.1
-  CURVERBAYES_REF: v0.4.1
+  CURVERCORE_REF: v0.4.2
+  CURVERFREQ_REF: v0.4.2
+  CURVERBAYES_REF: v0.4.2
   CURVERWEIGHTS_REF: main
 
 jobs:

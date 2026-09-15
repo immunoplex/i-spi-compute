@@ -115,7 +115,15 @@ flatten_result <- function(mp, job_id, method = NULL) {
 
     for (m in names(ens)) {
       e   <- ens[[m]]
-      asm <- .get_assessment(cr, m)
+      # cr$ensemble[[m]]$eligibility is the per-curve assessment in BOTH
+      # engines. .get_assessment() alone is NOT safe here: for curveRbayes's
+      # pooled/hierarchical fits, cr$selection$assessments[[m]] is a POOLED,
+      # model-level assessment shared across every curve in the batch (see
+      # fit_calibration_bayes.R), so calling .get_assessment() first would
+      # silently give every curve in a Bayesian job the SAME eligible/
+      # dynamic_range_log10 value instead of its own. Preferring $ensemble
+      # here matches what the diag_rows block below already does correctly.
+      asm <- cr$ensemble[[m]]$eligibility %||% .get_assessment(cr, m)
 
       sscore <- if (is_bayes) {
         if (!is.null(loo_info)) .na(loo_info$elpd_loo[loo_info$model_name == m]) else NA_real_
@@ -212,10 +220,12 @@ flatten_result <- function(mp, job_id, method = NULL) {
         timeperiod = .id(sm$timeperiod, n),
         dilution   = .id(sm$dilution,   n),
         predicted_concentration = .col(sm$predicted_concentration, n),
+        predicted_log10_concentration = .col(sm$predicted_log10_concentration, n),
         final_concentration     = .col(sm$final_concentration, n),
         se_concentration = .col(sm$se_concentration, n),
         pcov = .col(sm$pcov, n), pcov_rmse = .col(sm$pcov_rmse, n),
         pcov_pass = .col(sm$pcov_pass, n, NA),
+        pcov_gate_class = .col(sm$pcov_gate_class, n, NA_character_),
         job_id = job_id, stringsAsFactors = FALSE)
       dup <- duplicated(srow[, c("sampleid","patientid","timeperiod","dilution")])
       if (any(dup))
@@ -233,10 +243,19 @@ flatten_result <- function(mp, job_id, method = NULL) {
     # (~log10(grid_min_conc) = -4) and MUST NOT be reinstated.
     dl   <- cr$detection_limits %||% list()
     eb   <- cr$ensemble[[best]]$eligibility %||% .get_assessment(cr, best) %||% list()
-    infl <- tryCatch(
-      curveRcore::compute_inflection(best, cr$ensemble[[best]]$parameters),
-      error = function(e) NULL
-    )
+    # Prefer the inflection point cached by classify_pcov_gates_multiplate()
+    # (curveRcore) -- it computed this exact value to drive pcov_gate_class,
+    # so reusing it here guarantees calib_diagnostics.inflect_x/y can never
+    # disagree with what pcov_gate_class was actually classified against.
+    # Falls back to recomputing directly only for objects that were never run
+    # through that step (e.g. older results, ad hoc tests).
+    infl <- dl$inflection
+    if (is.null(infl) || !is.finite(infl$x %||% NA_real_)) {
+      infl <- tryCatch(
+        curveRcore::compute_inflection(best, cr$ensemble[[best]]$parameters),
+        error = function(e) NULL
+      )
+    }
     if (is.null(infl) || !is.finite(infl$x %||% NA_real_))
       infl <- .infl_from_grid(cr$grid)
     diag_rows[[length(diag_rows)+1L]] <- data.frame(

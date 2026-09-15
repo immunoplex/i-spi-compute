@@ -443,6 +443,14 @@ fit_one_group <- function(gb, method, is_bayes, seed, job_id, per_fit) {
 
     mp <- curveRcore::compute_detection_limits_multiplate(mp)
 
+    # Reclassify grid/sample pcov_pass (and add sample pcov_gate_class) using
+    # each curve's own LLOQ/ULOQ when available, falling back to the
+    # pcov-vs-threshold test (classified by inflection side) otherwise. Single
+    # shared implementation for both engines -- see curveRcore/pcov_gates.R.
+    # Must run AFTER compute_detection_limits_multiplate() (needs eligibility)
+    # and BEFORE flatten_result() (which reads cr$grid/cr$samples).
+    mp <- curveRcore::classify_pcov_gates_multiplate(mp)
+
     flat <- flatten_result(mp, job_id = job_id, method = method)
     pts <- flatten_calib_points(pp, job_id = job_id, method = method,
                                 response_var = "mfi",
