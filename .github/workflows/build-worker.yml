@@ -15,21 +15,40 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/i-spi-compute-worker
-  # Per-package curveR pins (passed as --build-arg). The load-bearing trio is
-  # pinned to v0.4.1 release tags for reproducibility (fixes the pcov_pass
-  # threshold bug -- see curveRcore/curveRfreq/curveRbayes NEWS.md);
-  # curveRweights tracks main. Set any to 'main' to track a branch instead of
-  # a tag.
+  # Per-package curveR pins (passed as --build-arg). All four packages are now
+  # pinned to release tags for reproducibility. Set any to 'main' to track a
+  # branch instead of a tag.
+  #
+  # v0.4.3 (curveRcore/curveRfreq/curveRbayes):
+  #   - curveRcore: fixed do.call(.cr_rbind_fill, parts) in the
+  #     calibration_result_multiplate tidy_* accessors (tidy_samples/tidy_grid/
+  #     tidy_hyperparam/tidy_fit_diag) -- see curveRcore NEWS.md. Not reached by
+  #     this worker (it never calls those accessors), so behaviourally inert
+  #     here; pinned in lockstep so the stack's versions stay meaningful.
+  #   - curveRfreq: fixed `converged` reporting (summary_table() now reflects
+  #     actual per-plate model convergence instead of merely that the
+  #     eligibility fallback returned a name) plus three NULL-fit guards.
+  #   - curveRbayes: fixed LOO stacking/r_eff in compute_loo, guarded the
+  #     Gompertz inner exponent against overflow, switched between-plate SD
+  #     priors to half-Cauchy, wired up reduce_sum threading, and declared the
+  #     curveRcore >= 0.4.0 floor it already required. See each package's
+  #     NEWS.md.
+  # v0.2.1 (curveRweights): fixed as_weight_data(source = "grid") requiring
+  #   design columns that curveRcore::tidy_grid() never carries, which made
+  #   predict_weights() on a calibration_result(_multiplate) always error.
+  #   curveRweights is unused by this worker at runtime, so also inert here;
+  #   pinned (rather than left tracking main) for the same reproducibility
+  #   reason as the trio.
   #
   # NOTE: the "Resolve curveR refs to commit SHAs" step below MUST actually
   # read these vars per package. It previously hardcoded refs/heads/main for
   # every package regardless of what's set here -- fixed 2026-09; if you're
   # diffing against an older copy of this file, make sure that fix carried
   # over too, or these pins are silently ignored again.
-  CURVERCORE_REF: v0.4.2
-  CURVERFREQ_REF: v0.4.2
-  CURVERBAYES_REF: v0.4.2
-  CURVERWEIGHTS_REF: main
+  CURVERCORE_REF: v0.4.3
+  CURVERFREQ_REF: v0.4.3
+  CURVERBAYES_REF: v0.4.3
+  CURVERWEIGHTS_REF: v0.2.1
 
 jobs:
   build-and-push:

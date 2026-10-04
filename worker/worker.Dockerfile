@@ -55,21 +55,24 @@ ENV CMDSTAN=/opt/cmdstan/current
 # which treats curveRbayes/curveRweights as optional and can leave them out).
 # Installed after CmdStan so curveRbayes' Stan build succeeds.
 #
-# Each package has its OWN ref build-arg so it can be pinned independently. The
-# load-bearing trio (curveRcore / curveRfreq / curveRbayes) is pinned to release
-# tags by CI (see build-worker.yml) for reproducible builds; curveRweights
-# tracks main (it is optional and is NOT in the verify list below). Defaults
-# here are 'main' so a bare `docker build` still works; CI overrides via
-# --build-arg.
+# Each package has its OWN ref build-arg so it can be pinned independently. All
+# four packages (curveRcore / curveRfreq / curveRbayes / curveRweights) are now
+# pinned to release tags by CI (see build-worker.yml) for reproducible builds.
+# curveRweights was previously left tracking 'main' (it's optional and is NOT in
+# the hard-verify list below, which only checks the load-bearing trio); it is
+# now pinned too, as of v0.2.1, for the same reproducibility reason. The
+# defaults below match the current release set so a bare `docker build` (no
+# --build-arg overrides) still builds something coherent; CI overrides all four
+# explicitly via --build-arg regardless.
 #
 # Each ref is interpolated into its RUN command text, so changing any single ref
 # cache-busts ONLY that layer (and the layers after it). force=TRUE additionally
 # guarantees the fitters are recompiled against the curveRcore just installed,
 # even when a DESCRIPTION Version string is unchanged.
-ARG CURVERCORE_REF=v0.4.2
-ARG CURVERFREQ_REF=v0.4.2
-ARG CURVERBAYES_REF=v0.4.2
-ARG CURVERWEIGHTS_REF=main
+ARG CURVERCORE_REF=v0.4.3
+ARG CURVERFREQ_REF=v0.4.3
+ARG CURVERBAYES_REF=v0.4.3
+ARG CURVERWEIGHTS_REF=v0.2.1
 
 # curveRcore first — the fitters build against it.
 # R's download.file() default timeout is 60s (getOption("timeout")). The
