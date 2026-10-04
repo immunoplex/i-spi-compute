@@ -69,7 +69,7 @@ ENV CMDSTAN=/opt/cmdstan/current
 # cache-busts ONLY that layer (and the layers after it). force=TRUE additionally
 # guarantees the fitters are recompiled against the curveRcore just installed,
 # even when a DESCRIPTION Version string is unchanged.
-ARG CURVERCORE_REF=v0.4.3
+ARG CURVERCORE_REF=v0.4.4
 ARG CURVERFREQ_REF=v0.4.3
 ARG CURVERBAYES_REF=v0.4.3
 ARG CURVERWEIGHTS_REF=v0.2.1

@@ -45,7 +45,10 @@ env:
   # every package regardless of what's set here -- fixed 2026-09; if you're
   # diffing against an older copy of this file, make sure that fix carried
   # over too, or these pins are silently ignored again.
-  CURVERCORE_REF: v0.4.3
+  # v0.4.4 (curveRcore only): documents the tidy_samples() study-design-column
+  # passthrough contract (timeperiod/agroup -> curveRweights). No functional
+  # code change. curveRfreq/curveRbayes stay at v0.4.3 -- nothing changed there.
+  CURVERCORE_REF: v0.4.4
   CURVERFREQ_REF: v0.4.3
   CURVERBAYES_REF: v0.4.3
   CURVERWEIGHTS_REF: v0.2.1
