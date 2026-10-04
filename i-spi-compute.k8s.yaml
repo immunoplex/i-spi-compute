@@ -1,6 +1,6 @@
 # =============================================================================
 # i-spi-compute — Kubernetes manifests (namespace: madi-preprod)
-#
+# curveRcore v0.4.3 - uncheck stop
 # A NEW, parallel stack that must NOT collide with the running production batch
 # calculator. The existing prod stack uses:
 #   - services/pods:  immunoplex-batch-cal-api, immunoplex-batch-cal-worker,
@@ -110,8 +110,8 @@ spec:
       imagePullSecrets: [{ name: regcred }]
       containers:
         - name: i-spi-compute-api
-          image: ghcr.io/immunoplex/i-spi-compute-api:0.4.0   # <-- versioned; bump per release. (was :main)
-          imagePullPolicy: IfNotPresent   # immutable version tag → no need to re-pull every restart
+          image: ghcr.io/immunoplex/i-spi-compute-api:main
+          imagePullPolicy: Always
           env:
             - { name: REDIS_HOST, value: i-spi-compute-redis }   # <-- new dedicated Redis
             - { name: REDIS_PORT, value: "6379" }
@@ -163,8 +163,8 @@ spec:
         kubernetes.io/arch: amd64   # Stan models are precompiled for amd64
       containers:
         - name: i-spi-compute-worker
-          image: ghcr.io/immunoplex/i-spi-compute-worker:0.4.0   # <-- versioned; bump per release. (was :main)
-          imagePullPolicy: IfNotPresent   # immutable version tag → no need to re-pull every restart
+          image: ghcr.io/immunoplex/i-spi-compute-worker:main
+          imagePullPolicy: Always
           env:
             - { name: REDIS_HOST, value: i-spi-compute-redis }   # <-- new dedicated Redis
             - { name: REDIS_PORT, value: "6379" }

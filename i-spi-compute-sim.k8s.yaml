@@ -1,0 +1,186 @@
+# =============================================================================
+# i-spi-compute-SIM — parallel clone for a big simulation run
+# namespace: madi-preprod
+# curveRcore v0.4.3 - uncheck stop
+# This is a SECOND parallel stack, cloned from i-spi-compute, that must NOT
+# collide with EITHER the production batch calculator (immunoplex-batch-cal-*)
+# OR the existing i-spi-compute stack.
+#
+# What changed vs i-spi-compute:
+#   - Every resource name + every `app:` label/selector: i-spi-compute-*  ->  i-spi-compute-sim-*
+#   - Dedicated Redis (own Deployment+Service)         ->  own job queue, no cross-talk
+#   - REDIS_HOST on api + worker                        ->  points at i-spi-compute-sim-redis
+#   - ROOT_PATH + Ingress path                          ->  /i-spi-compute-sim
+#
+# What is DELIBERATELY UNCHANGED (per requirement "same named secrets" + "same resources"):
+#   - Secret refs: still `i-spi-compute` (API_KEY, REDIS_AUTH) and
+#     `madi-lumi-reader`/`db_pwd_x` (DB_PASSWORD). No new SealedSecret needed.
+#   - Container images, resource requests/limits, WORKER_CORES, nodeSelector.
+#
+# NOTE: the SealedSecret is intentionally OMITTED here — we reuse the existing
+# `i-spi-compute` secret already present in the cluster.
+# =============================================================================
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Redis (dedicated queue for the SIM stack)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: i-spi-compute-sim-redis
+  namespace: madi-preprod
+  labels: { app: i-spi-compute-sim-redis }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: i-spi-compute-sim-redis }
+  template:
+    metadata:
+      labels: { app: i-spi-compute-sim-redis }
+    spec:
+      imagePullSecrets: [{ name: regcred }]
+      containers:
+        - name: i-spi-compute-sim-redis
+          image: redis:7
+          imagePullPolicy: IfNotPresent
+          args: ["--requirepass", "$(REDIS_AUTH)"]
+          env:
+            - name: REDIS_AUTH
+              valueFrom: { secretKeyRef: { name: i-spi-compute, key: REDIS_AUTH } }   # SAME secret, separate instance
+          ports:
+            - { containerPort: 6379, name: redis, protocol: TCP }
+          readinessProbe:
+            tcpSocket: { port: 6379 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: i-spi-compute-sim-redis
+  namespace: madi-preprod
+spec:
+  selector: { app: i-spi-compute-sim-redis }
+  ports:
+    - { port: 6379, targetPort: 6379, protocol: TCP, name: redis }
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# API (FastAPI)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: i-spi-compute-sim-api
+  namespace: madi-preprod
+  labels: { app: i-spi-compute-sim-api }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: i-spi-compute-sim-api }
+  template:
+    metadata:
+      labels: { app: i-spi-compute-sim-api }
+    spec:
+      imagePullSecrets: [{ name: regcred }]
+      containers:
+        - name: i-spi-compute-sim-api
+          image: ghcr.io/immunoplex/i-spi-compute-api:main
+          imagePullPolicy: Always
+          env:
+            - { name: REDIS_HOST, value: i-spi-compute-sim-redis }   # <-- dedicated SIM Redis
+            - { name: REDIS_PORT, value: "6379" }
+            - { name: REDIS_DB,   value: "0" }
+            - name: REDIS_AUTH
+              valueFrom: { secretKeyRef: { name: i-spi-compute, key: REDIS_AUTH } }
+            - name: API_KEY
+              valueFrom: { secretKeyRef: { name: i-spi-compute, key: API_KEY } }
+            - { name: ROOT_PATH,  value: /i-spi-compute-sim }         # <-- must match the SIM Traefik prefix
+          ports:
+            - { containerPort: 8000, name: http, protocol: TCP }
+          readinessProbe:
+            httpGet: { path: /health, port: 8000, scheme: HTTP }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits:   { cpu: 500m, memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: i-spi-compute-sim-api
+  namespace: madi-preprod
+spec:
+  selector: { app: i-spi-compute-sim-api }
+  ports:
+    - { port: 8000, targetPort: 8000, protocol: TCP, name: http }
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Worker (Python supervisor + R curveR engine)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: i-spi-compute-sim-worker
+  namespace: madi-preprod
+  labels: { app: i-spi-compute-sim-worker }
+spec:
+  replicas: 1                       # scale this up for the big run (see notes)
+  selector:
+    matchLabels: { app: i-spi-compute-sim-worker }
+  template:
+    metadata:
+      labels: { app: i-spi-compute-sim-worker }
+    spec:
+      imagePullSecrets: [{ name: regcred }]
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      containers:
+        - name: i-spi-compute-sim-worker
+          image: ghcr.io/immunoplex/i-spi-compute-worker:main
+          imagePullPolicy: Always
+          env:
+            - { name: REDIS_HOST, value: i-spi-compute-sim-redis }   # <-- dedicated SIM Redis
+            - { name: REDIS_PORT, value: "6379" }
+            - { name: REDIS_DB,   value: "0" }
+            - name: REDIS_AUTH
+              valueFrom: { secretKeyRef: { name: i-spi-compute, key: REDIS_AUTH } }
+            # --- database (SAME physical DB + credential as prod — see caution) ---
+            - { name: DB_NAME,    value: postgres }
+            - { name: DB_HOST,    value: mlr-c3d7-db.c.dartmouth.edu }
+            - { name: DB_PORT,    value: "5432" }
+            - { name: DB_USER,    value: d78039e }
+            - name: DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: madi-lumi-reader, key: db_pwd_x } }
+            - { name: DB_SSLMODE, value: require }
+            - { name: PROGRESS_DIR, value: /tmp }
+            - { name: WORKER_CORES, value: "16" }   # MUST equal the CPU limit below
+          resources:
+            requests: { cpu: "1",  memory: 2Gi }
+            limits:   { cpu: "16", memory: 16Gi }   # keep == WORKER_CORES
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Ingress (OPTIONAL — only if you submit jobs from outside the cluster).
+# Requires a Traefik stripprefix middleware named i-spi-compute-sim-stripprefix
+# to exist in the file provider (see step 4). If you'll submit jobs in-cluster
+# or via `kubectl port-forward`, you can delete this whole block.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: i-spi-compute-sim
+  namespace: madi-preprod
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: i-spi-compute-sim-stripprefix@file
+spec:
+  rules:
+  - http:
+      paths:
+      - pathType: Prefix
+        path: "/i-spi-compute-sim"
+        backend:
+          service:
+            name: i-spi-compute-sim-api
+            port:
+              number: 8000
+---
