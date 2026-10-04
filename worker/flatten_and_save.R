@@ -226,6 +226,12 @@ flatten_result <- function(mp, job_id, method = NULL) {
         pcov = .col(sm$pcov, n), pcov_rmse = .col(sm$pcov_rmse, n),
         pcov_pass = .col(sm$pcov_pass, n, NA),
         pcov_gate_class = .col(sm$pcov_gate_class, n, NA_character_),
+        # Non-key design/cohort column for curveRweights' saturated cell-means
+        # model (as_weight_data(design = c("timeperiod", "agroup"))). Passed
+        # through unmodified by curveRfreq/curveRbayes -- present here iff it
+        # was present on the `samples` frame handed to the fitter, i.e. iff
+        # madi_results.sample_for_fit still carries it from sample_unmasked.
+        agroup = .col(sm$agroup, n, NA_character_),
         job_id = job_id, stringsAsFactors = FALSE)
       dup <- duplicated(srow[, c("sampleid","patientid","timeperiod","dilution")])
       if (any(dup))
