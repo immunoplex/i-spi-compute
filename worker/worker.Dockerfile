@@ -58,12 +58,14 @@ ENV CMDSTAN=/opt/cmdstan/current
 # Each package has its OWN ref build-arg so it can be pinned independently. All
 # four packages (curveRcore / curveRfreq / curveRbayes / curveRweights) are now
 # pinned to release tags by CI (see build-worker.yml) for reproducible builds.
-# curveRweights was previously left tracking 'main' (it's optional and is NOT in
-# the hard-verify list below, which only checks the load-bearing trio); it is
-# now pinned too, as of v0.2.1, for the same reproducibility reason. The
-# defaults below match the current release set so a bare `docker build` (no
-# --build-arg overrides) still builds something coherent; CI overrides all four
-# explicitly via --build-arg regardless.
+# curveRweights was previously left tracking 'main' and left out of the hard-
+# verify list below (it was installed but never actually loaded by any worker
+# script). It is now pinned (v0.2.1) AND load-bearing: worker_weights.R's
+# weights_bayesian/weights_frequentist jobs library(curveRweights) for real, so
+# it now joins the hard-verify list too. The defaults below match the current
+# release set so a bare `docker build` (no --build-arg overrides) still builds
+# something coherent; CI overrides all four explicitly via --build-arg
+# regardless.
 #
 # Each ref is interpolated into its RUN command text, so changing any single ref
 # cache-busts ONLY that layer (and the layers after it). force=TRUE additionally
@@ -96,8 +98,9 @@ RUN R -e "message('installing fitters against curveRcore ', packageVersion('curv
             'immunoplex/curveRweights@${CURVERWEIGHTS_REF}'), upgrade='never', force=TRUE)"
 
 # Hard verify: fail the BUILD (loudly) if any required package can't load, so a
-# silent partial install can never reach runtime again.
-RUN R -e "pkgs <- c('curveRcore','curveRfreq','curveRbayes'); \
+# silent partial install can never reach runtime again. curveRweights is in
+# this list now (see note above) -- it backs worker_weights.R for real.
+RUN R -e "pkgs <- c('curveRcore','curveRfreq','curveRbayes','curveRweights'); \
           ok <- vapply(pkgs, requireNamespace, logical(1), quietly=TRUE); \
           if (!all(ok)) { cat('MISSING:', paste(pkgs[!ok], collapse=', '), '\n'); quit(status=1) }; \
           for (p in pkgs) cat(sprintf('  %s %s\n', p, as.character(packageVersion(p)))); \
@@ -116,9 +119,10 @@ RUN R -e "for (m in c('logistic4','logistic5','loglogistic4','loglogistic5','gom
 # ── Copy worker scripts ─────────────────────────────────────────────────────
 # worker_curveR.R sources flatten_and_save.R and verify_saved.R as SIBLINGS at
 # runtime — they must live in the same directory or the worker aborts on load.
+# worker_weights.R sources flatten_and_save.R too (for .append()), same reason.
 WORKDIR /app
 COPY supervisor.py entrypoint.sh \
-     worker_curveR.R flatten_and_save.R verify_saved.R \
+     worker_curveR.R worker_weights.R flatten_and_save.R verify_saved.R \
      ./
 RUN chmod +x entrypoint.sh
 

@@ -13,6 +13,19 @@ Job contract (curve_id batch — see HANDOFF_worker_curve_id_batch.md):
     `multiplate_group_id`); the worker reads the `*_for_fit` views by
     `curve_id = ANY(batch)`, groups by `multiplate_group_id`, fits, and persists.
 
+Precision-weighting jobs (script_type "weights_bayesian" / "weights_frequentist"):
+    Same curve_ids-batch shape as calibration jobs, but the worker reads
+    already-PERSISTED `calib_samples` (joined to `curve_lookup`) instead of
+    fitting from raw wells — submit the SAME curve_ids a prior calibration job
+    used for that method. Required `params` keys: `design` (comma-joined
+    column names defining the saturated cells, e.g. "timeperiod,agroup").
+    Optional: `scale_predictor` ("se" (default) | "pcov"), and the MCMC knobs
+    `iter`, `warmup`, `chains`, `adapt_delta`, `seed` (brms/Stan's own naming —
+    NOT the same names as the bayesian calibration job's `sampling`/`warmup`).
+    Runs as a fully separate job/process from calibration — a weights-fit
+    failure can never affect a calibration job's status or data. Writes to
+    `calib_weights`/`calib_weights_fit`, not `calib_samples`.
+
 Authentication: X-API-Key header required on all endpoints (except /health).
 Set API_KEY env var. For local dev, defaults to "dev-key-immunoplex".
 
@@ -131,8 +144,12 @@ class JobSubmission(BaseModel):
         "bayesian",
         description=(
             "Which engine to run. 'bayesian' (curveRbayes + CmdStan) or "
-            "'frequentist' (curveRfreq). More can be registered in the worker's "
-            "SCRIPT_REGISTRY."
+            "'frequentist' (curveRfreq) fit calibration curves from raw wells. "
+            "'weights_bayesian' / 'weights_frequentist' instead compute "
+            "curveRweights precision weights from already-persisted "
+            "calib_samples for that method (see module docstring) -- a fully "
+            "separate job from calibration, never affecting its status or "
+            "data. More can be registered in the worker's SCRIPT_REGISTRY."
         ),
     )
     params: dict = Field(

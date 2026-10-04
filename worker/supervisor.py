@@ -56,10 +56,23 @@ PROGRESS_DIR = Path(os.getenv("PROGRESS_DIR", "/tmp"))
 # only in the --method flag passed to it. method_flag=None means "don't pass
 # --method" (for a future non-curve script, e.g. a QC report).
 # To add a new calculation: drop the script here and add a line.
+#
+# "weights_bayesian"/"weights_frequentist" (curveRweights precision-weighting,
+# added alongside the agroup/calib_weights work): same pattern as
+# bayesian/frequentist above, but a SEPARATE script that reads already-
+# persisted calib_samples (joined to curve_lookup) instead of fitting from raw
+# wells -- deliberately decoupled, in time and in failure domain, from
+# calibration. A crash in a weights fit can never touch a calibration job: it
+# runs as its own Redis job/process, never shares code path or data with
+# worker_curveR.R. method_flag picks which calib_samples.method to read (that
+# table is keyed by method, so there is no default -- worker_weights.R itself
+# refuses to run without --method).
 SCRIPTS_DIR = Path(__file__).parent
 SCRIPT_REGISTRY = {
-    "bayesian":    ("Rscript", SCRIPTS_DIR / "worker_curveR.R", "bayesian"),
-    "frequentist": ("Rscript", SCRIPTS_DIR / "worker_curveR.R", "frequentist"),
+    "bayesian":            ("Rscript", SCRIPTS_DIR / "worker_curveR.R", "bayesian"),
+    "frequentist":         ("Rscript", SCRIPTS_DIR / "worker_curveR.R", "frequentist"),
+    "weights_bayesian":    ("Rscript", SCRIPTS_DIR / "worker_weights.R", "bayesian"),
+    "weights_frequentist": ("Rscript", SCRIPTS_DIR / "worker_weights.R", "frequentist"),
     # "qc_report": ("python3", SCRIPTS_DIR / "worker_qc.py", None),
 }
 
