@@ -311,7 +311,13 @@ main <- function() {
   warmup      <- as.integer(P$warmup)
   chains      <- as.integer(P$chains)
   adapt_delta <- as.numeric(P$adapt_delta)
-  seed        <- if (nzchar(P$seed)) as.integer(P$seed) else NULL
+  # NB: NOT NULL when unset -- fit_saturated_weight()'s own default is 42, but
+  # that default only applies if the `seed` arg is omitted entirely. Passing
+  # seed = NULL explicitly (rather than omitting it) reaches brms::brm() as a
+  # literal NULL and fails with "Cannot coerce 'seed' to a single numeric
+  # value" (confirmed via smoke test). Match the package's own default instead
+  # of trying to omit the argument through several layers of `...`.
+  seed        <- if (nzchar(P$seed)) as.integer(P$seed) else 42L
 
   batch <- suppressWarnings(as.integer(strsplit(trimws(P$curve_ids), "\\s*,\\s*")[[1]]))
   batch <- unique(batch[!is.na(batch)])
