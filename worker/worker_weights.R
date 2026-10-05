@@ -254,10 +254,15 @@ fit_one_weights_group <- function(gb, method, design_cols, scale_predictor,
       adapt_delta = adapt_delta, seed = seed)
 
     # pw$weights carries obs_id/sampleid/curve_id/se/pcov/sigma/w/w_norm but
-    # not patientid/timeperiod/dilution -- rejoin to the original rows by the
-    # stable positional obs_id (as_weight_data() never reorders/drops rows
-    # when drop_oor = FALSE, the default used above).
-    ident <- sg[, c(".obs_id", "patientid", "timeperiod", "dilution"), drop = FALSE]
+    # not patientid/timeperiod/dilution/agroup -- rejoin to the original rows
+    # by the stable positional obs_id (as_weight_data() never reorders/drops
+    # rows when drop_oor = FALSE, the default used above). agroup is carried
+    # through regardless of whether it was one of --design's columns for THIS
+    # job (same as timeperiod/patientid/dilution) -- it's calib_samples
+    # identity/context, not just a design-fit input, and the "Computed weights
+    # by design cell" UI cross-tabs on it even when only timeperiod was used
+    # as the design column.
+    ident <- sg[, c(".obs_id", "patientid", "timeperiod", "dilution", "agroup"), drop = FALSE]
     wrow <- merge(pw$weights, ident, by.x = "obs_id", by.y = ".obs_id")
     wrow$method <- method
     wrow$job_id <- job_id
@@ -266,7 +271,7 @@ fit_one_weights_group <- function(gb, method, design_cols, scale_predictor,
     # dbAppendTable() may reject it or silently misbehave.
     wrow$curve_id <- as.integer(wrow$curve_id)
     wrow <- wrow[, c("curve_id", "method", "sampleid", "patientid", "timeperiod",
-                     "dilution", "se", "pcov", "sigma", "w", "w_norm", "job_id")]
+                     "dilution", "agroup", "se", "pcov", "sigma", "w", "w_norm", "job_id")]
 
     est <- pw$estimates
     fit_row <- data.frame(
