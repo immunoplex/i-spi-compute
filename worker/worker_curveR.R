@@ -430,6 +430,7 @@ fit_one_group <- function(gb, method, is_bayes, seed, job_id, per_fit) {
         seed = seed, include_measurement_error = gb$inc_me,
         persist_draws = gb$persist_draws,
         bayes_single_plate = gb$bayes_single_plate,
+        decision_cutoff = gb$decision_cutoff,
         run_loo = TRUE, verbose = FALSE)
     } else {
       mp <- curveRfreq::fit_calibration_freq_multiplate(
@@ -438,7 +439,10 @@ fit_one_group <- function(gb, method, is_bayes, seed, job_id, per_fit) {
         is_log_response = gb$study_params$is_log_response,
         is_log_independent = gb$study_params$is_log_independent,
         std_curve_conc = gb$sc, cv_x_max = 150,
-        persist_draws = gb$persist_draws)
+        persist_draws = gb$persist_draws,
+        decision_cutoff = gb$decision_cutoff,
+        n_interval_draws = gb$n_interval_draws,
+        interval_seed = seed)
     }
 
     mp <- curveRcore::compute_detection_limits_multiplate(mp)
@@ -450,6 +454,11 @@ fit_one_group <- function(gb, method, is_bayes, seed, job_id, per_fit) {
     # Must run AFTER compute_detection_limits_multiplate() (needs eligibility)
     # and BEFORE flatten_result() (which reads cr$grid/cr$samples).
     mp <- curveRcore::classify_pcov_gates_multiplate(mp)
+
+    # Censoring class + natural-scale, dilution-corrected bounds per sample
+    # (curveRcore >= 0.5.0). Needs LODs and LLOQ/ULOQ, so it runs after both
+    # calls above.
+    mp <- curveRcore::classify_censoring_multiplate(mp)
 
     flat <- flatten_result(mp, job_id = job_id, method = method)
     pts <- flatten_calib_points(pp, job_id = job_id, method = method,
@@ -568,6 +577,17 @@ main <- function() {
       inc_me  = !identical(tolower(trimws(
                   pick("include_measurement_error",
                        sget(rep_cid, "include_measurement_error", NULL), "true"))), "false"),
+      # Decision cutoff for each sample's p_below_cutoff (dilution-corrected
+      # concentration units). CASCADE ONLY -- deliberately not a job param, so a
+      # per-antigen override always wins (unlike pcov_threshold, which the API's
+      # always-injected cdan_cv shadows). NULL/<=0 = none (column NA).
+      decision_cutoff = {
+        v <- .as_num(sget(rep_cid, "decision_cutoff", NULL), NA_real_)
+        if (is.finite(v) && v > 0) v else NULL
+      },
+      # Monte Carlo draws per sample for frequentist predictive intervals.
+      n_interval_draws = as.integer(pick("n_interval_draws",
+                           sget(rep_cid, "n_interval_draws", NULL), "1000")),
       # bayes sampling knobs: CLI over cascade over coded default.
       b_chains = as.integer(pick("chains",   sget(rep_cid, "bayes_chains",   NULL), "4")),
       b_warmup = as.integer(pick("warmup",   sget(rep_cid, "bayes_warmup",   NULL), "1000")),

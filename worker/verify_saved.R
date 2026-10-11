@@ -103,7 +103,9 @@ suppressWarnings(suppressMessages({
     n_hyper <- if (!is.null(pop) && is.data.frame(pop$params)) nrow(pop$params) else 0L
     n_fitdiag <- if (!is.null(pop) && !is.null(pop$fit_diag)) 1L else 0L
     cur_draws <- tryCatch(cr$ensemble[[best]]$draws, error = function(z) NULL)
+    cur_fixed <- tryCatch(cr$ensemble[[best]]$draws_fixed, error = function(z) NULL)
     n_draws <- length(cur_draws %||% list()) +
+               (if (length(cur_draws)) length(cur_fixed %||% list()) else 0L) +
                (if (!is.null(pop)) length(pop$draws %||% list()) else 0L)
 
     data.frame(
@@ -349,6 +351,67 @@ verify_saved <- function(mp,
     curve_id = "-", table = "cross", check = "no_orphans",
     expected = "0", observed = as.character(n_orphans %||% "NA"),
     pass = isTRUE(n_orphans == 0L), stringsAsFactors = FALSE))
+
+  # ── calib_draws integrity (only if this run stored any) ────────────────────
+  # (a) curve-scope drawn terms must be calib_param terms of the same model --
+  #     catches positional names like p1, p2 (the pre-0.5.0 frequentist bug);
+  # (b) a curve's drawn arrays must all have the same length, since rebuilding
+  #     curve s takes draw s of every term (they are index-aligned).
+  if (sum(exp$exp_draws, na.rm = TRUE) > 0) {
+    ids <- paste(curve_ids, collapse = ",")
+    unknown <- tryCatch(DBI::dbGetQuery(conn, sprintf(
+      "SELECT d.curve_id, d.term FROM %1$s.calib_draws d
+        WHERE d.method = '%2$s' AND d.curve_id IN (%3$s)
+          AND d.param_scope = 'curve' AND d.sample_kind <> 'fixed'
+          AND NOT EXISTS (SELECT 1 FROM %1$s.calib_param p
+                           WHERE p.curve_id = d.curve_id AND p.method = d.method
+                             AND p.model_name = d.model_name AND p.term = d.term)",
+      schema, method, ids)), error = function(e) NULL)
+    n_unknown <- if (is.null(unknown)) NA_integer_ else nrow(unknown)
+    checks <- rbind(checks, data.frame(
+      curve_id = "-", table = "calib_draws", check = "terms_match_calib_param",
+      expected = "0", observed = if (is.na(n_unknown)) "NA" else if (n_unknown == 0L) "0"
+        else paste(n_unknown, "unknown:", paste(unique(unknown$term), collapse = ",")),
+      pass = isTRUE(n_unknown == 0L), stringsAsFactors = FALSE))
+
+    ragged <- tryCatch(DBI::dbGetQuery(conn, sprintf(
+      "SELECT curve_id FROM %1$s.calib_draws
+        WHERE method = '%2$s' AND curve_id IN (%3$s) AND sample_kind <> 'fixed'
+        GROUP BY curve_id, param_scope HAVING count(DISTINCT n_draws) > 1",
+      schema, method, ids)), error = function(e) NULL)
+    n_ragged <- if (is.null(ragged)) NA_integer_ else nrow(ragged)
+    checks <- rbind(checks, data.frame(
+      curve_id = "-", table = "calib_draws", check = "aligned_n_draws",
+      expected = "0", observed = as.character(n_ragged %||% "NA"),
+      pass = isTRUE(n_ragged == 0L), stringsAsFactors = FALSE))
+  }
+
+  # ── out-of-range columns: save_calib()'s .append() silently drops any column
+  # the table lacks, so a worker running curveR >= 0.5.0 against a database
+  # without migration 008 would lose them with no error. Checked only when the
+  # in-memory result actually produced them.
+  oor_cols <- c("censor_class", "censor_type", "censor_lower", "censor_upper",
+                "conc_q_lo", "conc_q_med", "conc_q_hi", "p_below_lloq",
+                "p_above_uloq", "p_below_cutoff", "frac_draws_below_a",
+                "frac_draws_above_d")
+  produced <- tryCatch({
+    pl <- if (inherits(mp, "calibration_result_multiplate")) mp$plates else list(mp)
+    any(vapply(pl, function(cr) !is.null(cr) && is.data.frame(cr$samples) &&
+                 "censor_class" %in% names(cr$samples), logical(1)))
+  }, error = function(e) FALSE)
+  if (produced) {
+    db_cols <- tryCatch(DBI::dbGetQuery(conn, sprintf(
+      "SELECT column_name FROM information_schema.columns
+        WHERE table_schema = '%s' AND table_name = 'calib_samples'", schema))$column_name,
+      error = function(e) character(0))
+    missing <- setdiff(oor_cols, db_cols)
+    checks <- rbind(checks, data.frame(
+      curve_id = "-", table = "calib_samples", check = "censoring_columns_present",
+      expected = "0 missing",
+      observed = if (length(missing)) paste("missing:", paste(missing, collapse = ","))
+                 else "0 missing",
+      pass = !length(missing), stringsAsFactors = FALSE))
+  }
 
   ok <- all(checks$pass, na.rm = TRUE) && !anyNA(checks$pass)
 

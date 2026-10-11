@@ -15,7 +15,10 @@
 #   docker compose build worker
 # =============================================================================
 
-FROM rocker/tidyverse:latest
+# Pinned (was :latest) so every CI build gets the same R. Must be R >= 4.4:
+# curveRfreq relies on base R's `%||%`, which first shipped in R 4.4.0.
+# 4.5.2 is the R the curveR 0.5.0 release set was tested on.
+FROM rocker/tidyverse:4.5.2
 
 LABEL org.opencontainers.image.source=https://github.com/immunoplex/i-spi-compute-worker
 LABEL org.opencontainers.image.description="i-spi-compute — Worker (curveR)"
@@ -71,9 +74,9 @@ ENV CMDSTAN=/opt/cmdstan/current
 # cache-busts ONLY that layer (and the layers after it). force=TRUE additionally
 # guarantees the fitters are recompiled against the curveRcore just installed,
 # even when a DESCRIPTION Version string is unchanged.
-ARG CURVERCORE_REF=v0.4.4
-ARG CURVERFREQ_REF=v0.4.3
-ARG CURVERBAYES_REF=v0.4.3
+ARG CURVERCORE_REF=v0.5.0
+ARG CURVERFREQ_REF=v0.5.0
+ARG CURVERBAYES_REF=v0.5.0
 ARG CURVERWEIGHTS_REF=v0.2.1
 
 # curveRcore first — the fitters build against it.
@@ -105,6 +108,23 @@ RUN R -e "pkgs <- c('curveRcore','curveRfreq','curveRbayes','curveRweights'); \
           if (!all(ok)) { cat('MISSING:', paste(pkgs[!ok], collapse=', '), '\n'); quit(status=1) }; \
           for (p in pkgs) cat(sprintf('  %s %s\n', p, as.character(packageVersion(p)))); \
           cat('curveR packages OK\n')"
+
+# Contract verify: worker_curveR.R calls the curveR 0.5.0 API (censoring,
+# predictive intervals, decision_cutoff / n_interval_draws / interval_seed).
+# Fail the BUILD if an older package slipped in (e.g. a stale cached layer),
+# instead of every job failing at runtime with 'could not find function'.
+RUN R -e "need <- c(curveRcore = '0.5.0', curveRfreq = '0.5.0', curveRbayes = '0.5.0'); \
+          old <- names(need)[vapply(names(need), function(p) packageVersion(p) < need[[p]], logical(1))]; \
+          if (length(old)) { cat('TOO OLD (need >= 0.5.0):', paste(old, collapse=', '), '\n'); quit(status=1) }; \
+          fns <- c('classify_censoring_multiplate','summarize_conc_draws','invert_with_bounds'); \
+          miss <- fns[!vapply(fns, exists, logical(1), envir = asNamespace('curveRcore'))]; \
+          if (length(miss)) { cat('curveRcore missing:', paste(miss, collapse=', '), '\n'); quit(status=1) }; \
+          if (!all(c('decision_cutoff','n_interval_draws','interval_seed') %in% \
+                   names(formals(curveRfreq::fit_calibration_freq_multiplate)))) \
+            { cat('curveRfreq lacks the 0.5.0 arguments\n'); quit(status=1) }; \
+          if (!'decision_cutoff' %in% names(formals(curveRbayes::fit_calibration_bayes))) \
+            { cat('curveRbayes lacks decision_cutoff\n'); quit(status=1) }; \
+          cat('curveR 0.5.0 contract OK\n')"
 
 # ── Precompile curveRbayes Stan models into the image ────────────────────────
 # Bakes compiled model executables into a layer so containers start instantly

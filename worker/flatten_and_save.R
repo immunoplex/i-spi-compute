@@ -232,6 +232,21 @@ flatten_result <- function(mp, job_id, method = NULL) {
         # was present on the `samples` frame handed to the fitter, i.e. iff
         # madi_results.sample_for_fit still carries it from sample_unmasked.
         agroup = .col(sm$agroup, n, NA_character_),
+        # Out-of-range handling (curveRcore >= 0.5.0; migration 008). Censoring
+        # from classify_censoring_multiplate(); quantiles/probabilities from the
+        # engines' summarize_conc_draws(). .col() yields NA on an older curveR.
+        censor_class = .col(sm$censor_class, n, NA_character_),
+        censor_type  = .col(sm$censor_type,  n, NA_character_),
+        censor_lower = .col(sm$censor_lower, n),
+        censor_upper = .col(sm$censor_upper, n),
+        conc_q_lo  = .col(sm$conc_q_lo,  n),
+        conc_q_med = .col(sm$conc_q_med, n),
+        conc_q_hi  = .col(sm$conc_q_hi,  n),
+        p_below_lloq   = .col(sm$p_below_lloq,   n),
+        p_above_uloq   = .col(sm$p_above_uloq,   n),
+        p_below_cutoff = .col(sm$p_below_cutoff, n),
+        frac_draws_below_a = .col(sm$frac_draws_below_a, n),
+        frac_draws_above_d = .col(sm$frac_draws_above_d, n),
         job_id = job_id, stringsAsFactors = FALSE)
       dup <- duplicated(srow[, c("sampleid","patientid","timeperiod","dilution")])
       if (any(dup))
@@ -288,6 +303,8 @@ flatten_result <- function(mp, job_id, method = NULL) {
       rdl_upper_conc  = .na(dl$mdc_rdl$rdl_upper_conc),
       pcov_threshold = .na(cr$meta$pcov_threshold),
       cv_x_max = .na(cr$meta$cv_x_max),
+      decision_cutoff  = .na(cr$meta$decision_cutoff),
+      n_interval_draws = .na(cr$meta$n_interval_draws %||% cr$meta$n_draws_predict),
       alpha = .na(dl$alpha),
       job_id = job_id, stringsAsFactors = FALSE)
 
@@ -329,10 +346,18 @@ flatten_result <- function(mp, job_id, method = NULL) {
           job_id = job_id, stringsAsFactors = FALSE)
       }
 
-      # draws: per-plate curve params (selected model's $draws) + population draws
+      # draws: per-plate curve params (selected model's $draws) + population
+      # draws. Term names match calib_param, so a curve can be rebuilt by
+      # taking draw s of every term (all arrays of one curve/scope are index-
+      # aligned and equal length -- verify_saved checks both). Frequentist
+      # draws (curveRfreq >= 0.5.0) are persisted by default and are the same
+      # draws behind the samples' intervals. A parameter held FIXED in the fit
+      # (fixed lower asymptote) is not drawn; it is stored as a one-element
+      # array with sample_kind = 'fixed' so the curve is still reconstructable.
       cur_draws <- tryCatch(cr$ensemble[[pop_model]]$draws, error = function(z) NULL)
+      cur_fixed <- tryCatch(cr$ensemble[[pop_model]]$draws_fixed, error = function(z) NULL)
       kind <- if (is_bayes) "posterior" else "mvn"
-      add_draws <- function(dl_list, scope) {
+      add_draws <- function(dl_list, scope, kind) {
         for (t in names(dl_list %||% list())) {
           v <- as.numeric(dl_list[[t]])
           if (!length(v)) next
@@ -343,8 +368,9 @@ flatten_result <- function(mp, job_id, method = NULL) {
             draws = I(list(v)), stringsAsFactors = FALSE)
         }
       }
-      add_draws(cur_draws, "curve")
-      add_draws(pop$draws, "population")
+      add_draws(cur_draws, "curve", kind)
+      if (length(cur_draws)) add_draws(cur_fixed, "curve", "fixed")
+      add_draws(pop$draws, "population", kind)
     }
   }
 
@@ -585,7 +611,8 @@ flatten_calib_points <- function(pp, job_id, method, response_var = "mfi",
                 error = function(e) list())
   keep <- m[intersect(names(m),
     c("chains","warmup","sampling","adapt_delta","seed","pcov_threshold",
-      "use_heteroscedastic_noise","n_draws_predict","n_draws_ensemble"))]
+      "use_heteroscedastic_noise","n_draws_predict","n_draws_ensemble",
+      "decision_cutoff","n_interval_draws","interval_seed"))]
   tryCatch(jsonlite::toJSON(keep, auto_unbox = TRUE, null = "null"),
            error = function(e) NA_character_)
 }
@@ -686,7 +713,9 @@ save_calib <- function(conn, flat, schema = "madi_results", verbose = TRUE) {
      VALUES ($1,$2,$3,$4,$5,$6,$7::double precision[],$8,$9)", schema, table)
   for (i in seq_len(nrow(df))) {
     v   <- as.numeric(df$draws[[i]])
-    lit <- paste0("{", paste(format(v, trim = TRUE, scientific = TRUE), collapse = ","), "}")
+    # %.17g round-trips a double exactly (format() kept only ~7 significant
+    # digits, so stored draws did not reproduce the in-memory ones).
+    lit <- paste0("{", paste(sprintf("%.17g", v), collapse = ","), "}")
     DBI::dbExecute(conn, sql, params = list(
       as.numeric(df$curve_id[i]), df$method[i], df$model_name[i], df$term[i],
       df$param_scope[i], df$sample_kind[i], lit, as.integer(df$n_draws[i]), df$job_id[i]))

@@ -141,6 +141,25 @@ CREATE TABLE IF NOT EXISTS calib_samples (
     pcov                    numeric,
     pcov_rmse               numeric,
     pcov_pass               boolean,
+    -- columns below were added after v1: predicted_log10_concentration and
+    -- pcov_gate_class (live table, previously untracked here), agroup
+    -- (migration 003), and the out-of-range columns (migration 008)
+    predicted_log10_concentration numeric,
+    pcov_gate_class         text,
+    agroup                  varchar(40),
+    censor_class            text CHECK (censor_class IN ('quantified','lod_to_lloq','below_lod',
+                                         'below_lloq','above_uloq','saturated','no_response')),
+    censor_type             text CHECK (censor_type IN ('none','left','interval','right')),
+    censor_lower            double precision,        -- natural, dilution-corrected; NULL = unbounded
+    censor_upper            double precision,
+    conc_q_lo               double precision,        -- 2.5/50/97.5% predictive quantiles,
+    conc_q_med              double precision,        --   natural scale, dilution-corrected
+    conc_q_hi               double precision,
+    p_below_lloq            double precision,
+    p_above_uloq            double precision,
+    p_below_cutoff          double precision,
+    frac_draws_below_a      double precision,
+    frac_draws_above_d      double precision,
     job_id                  varchar(64),
     created_at              timestamptz DEFAULT now(),
     PRIMARY KEY (curve_id, method, sampleid, patientid, timeperiod, dilution)
@@ -190,6 +209,8 @@ CREATE TABLE IF NOT EXISTS calib_diagnostics (
     -- context
     pcov_threshold       numeric,
     cv_x_max             numeric,
+    decision_cutoff      double precision,       -- migration 008
+    n_interval_draws     integer,                -- migration 008
     alpha                numeric,
     job_id               varchar(64),
     created_at           timestamptz DEFAULT now(),

@@ -48,9 +48,21 @@ env:
   # v0.4.4 (curveRcore only): documents the tidy_samples() study-design-column
   # passthrough contract (timeperiod/agroup -> curveRweights). No functional
   # code change. curveRfreq/curveRbayes stay at v0.4.3 -- nothing changed there.
-  CURVERCORE_REF: v0.4.4
-  CURVERFREQ_REF: v0.4.3
-  CURVERBAYES_REF: v0.4.3
+  # v0.5.0 (curveRcore, curveRfreq, curveRbayes): out-of-range test samples --
+  # censor_class/censor_type/censor_lower/censor_upper, conc_q_lo/med/hi,
+  # p_below_lloq/p_above_uloq/p_below_cutoff, frac_draws_below_a/above_d;
+  # frequentist MVN parameter draws named like calib_param, seeded, persisted
+  # by default (the draws behind the sample intervals); curveRbayes passes
+  # is_log_response through to sample prediction.
+  # REQUIRES migrations 008 (calib_samples / calib_diagnostics columns +
+  # decision_cutoff / n_interval_draws settings) and 009 (calib_draws key +
+  # 'fixed' sample_kind) on the DB before workers roll -- verify_saved fails
+  # the job otherwise. Both applied to mlr-c3d7-db 2026-10-11.
+  # The worker.Dockerfile contract check fails the image build if any of the
+  # three is older than 0.5.0.
+  CURVERCORE_REF: v0.5.0
+  CURVERFREQ_REF: v0.5.0
+  CURVERBAYES_REF: v0.5.0
   CURVERWEIGHTS_REF: v0.2.1
 
 jobs:

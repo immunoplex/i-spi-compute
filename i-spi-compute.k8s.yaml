@@ -1,6 +1,11 @@
 # =============================================================================
 # i-spi-compute — Kubernetes manifests (namespace: madi-preprod)
-# curveRcore v0.4.3 - uncheck stop
+# curveR 0.5.0 (curveRcore/curveRfreq/curveRbayes v0.5.0, curveRweights v0.2.1;
+# pins live in .github/workflows/build-worker.yml). Image :main is rebuilt by
+# CI; deploy = commit this file to dartmouth/k8s-madi (preprod-rcikube6/), then
+# delete the worker pod in Rancher. Needs DB migrations 008 + 009 (applied).
+# Resources unchanged: per-sample Monte Carlo intervals (freq, 1000 draws) and
+# the extra Bayesian draw matrix fit well within the 16 CPU / 16Gi limits.
 # A NEW, parallel stack that must NOT collide with the running production batch
 # calculator. The existing prod stack uses:
 #   - services/pods:  immunoplex-batch-cal-api, immunoplex-batch-cal-worker,
