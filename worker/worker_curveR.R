@@ -235,7 +235,8 @@ make_settings_accessor <- function(resolved) {
   tolower(trimws(x)) %in% c("true","t","1","yes")
 }
 .as_num <- function(x, default = NA_real_) {
-  v <- suppressWarnings(as.numeric(x)); if (is.na(v)) default else v
+  # NULL (unset cascade key, e.g. decision_cutoff) -> numeric(0); guard it.
+  v <- suppressWarnings(as.numeric(x)); if (length(v) != 1L || is.na(v)) default else v
 }
 
 # CLI-over-cascade precedence: if the caller explicitly supplied `cli_key`, use
