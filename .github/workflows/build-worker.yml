@@ -60,10 +60,16 @@ env:
   # the job otherwise. Both applied to mlr-c3d7-db 2026-10-11.
   # The worker.Dockerfile contract check fails the image build if any of the
   # three is older than 0.5.0.
-  CURVERCORE_REF: v0.5.0
-  CURVERFREQ_REF: v0.5.0
-  CURVERBAYES_REF: v0.5.0
-  CURVERWEIGHTS_REF: v0.2.1
+  # v0.5.1 (curveRcore, 2026-10-10) fixes analytic gradients for 5PL / Gompertz /
+  # log-logistic inverses (delta-method SEs); v0.5.2 is a documentation release
+  # (getting-started vignette: censoring + precision weights).
+  # curveRfreq/curveRbayes v0.5.1 and curveRweights v0.2.2 are maintenance /
+  # vignette releases with no functional change; pinned so all four packages
+  # come from the same coordinated set of tags.
+  CURVERCORE_REF: v0.5.2
+  CURVERFREQ_REF: v0.5.1
+  CURVERBAYES_REF: v0.5.1
+  CURVERWEIGHTS_REF: v0.2.2
 
 jobs:
   build-and-push:

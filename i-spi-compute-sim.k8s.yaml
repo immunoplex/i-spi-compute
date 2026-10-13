@@ -1,7 +1,7 @@
 # =============================================================================
 # i-spi-compute-SIM — parallel clone for a big simulation run
 # namespace: madi-preprod
-# curveR 0.5.0 (curveRcore/curveRfreq/curveRbayes v0.5.0, curveRweights v0.2.1;
+# curveR (curveRcore v0.5.2, curveRfreq/curveRbayes v0.5.1, curveRweights v0.2.2;
 # pins live in .github/workflows/build-worker.yml). Image :main is rebuilt by
 # CI; deploy = commit this file to dartmouth/k8s-madi (preprod-rcikube6/), then
 # delete the worker pod in Rancher. Needs DB migrations 008 + 009 (applied).
