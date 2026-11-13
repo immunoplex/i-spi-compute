@@ -66,10 +66,17 @@ env:
   # curveRfreq/curveRbayes v0.5.1 and curveRweights v0.2.2 are maintenance /
   # vignette releases with no functional change; pinned so all four packages
   # come from the same coordinated set of tags.
-  CURVERCORE_REF: v0.5.2
+  # v0.6.0 (curveRcore) + v0.3.0 (curveRweights), weights-additive branch: calib_weights
+  # and calib_weights_fit hold the weights of either model (`model` column; keys
+  # unchanged). curveRcore 0.6.0 carries the data contract (weights_contract(),
+  # validate_weights_table()) and the DDL; curveRweights 0.3.0 adds the additive
+  # measurement-error model, opt-in -- the default model is unchanged. REQUIRES
+  # migration 010 (worker/migrations/010_calib_weights_model.sql) on the DB before an
+  # image with these pins runs --model additive; worker_weights.R refuses otherwise.
+  CURVERCORE_REF: v0.6.0
   CURVERFREQ_REF: v0.5.1
   CURVERBAYES_REF: v0.5.1
-  CURVERWEIGHTS_REF: v0.2.2
+  CURVERWEIGHTS_REF: v0.3.0
 
 jobs:
   build-and-push:

@@ -19,7 +19,11 @@ Precision-weighting jobs (script_type "weights_bayesian" / "weights_frequentist"
     fitting from raw wells — submit the SAME curve_ids a prior calibration job
     used for that method. Required `params` keys: `design` (comma-joined
     column names defining the saturated cells, e.g. "timeperiod,agroup").
-    Optional: `scale_predictor` ("se" (default) | "pcov"), and the MCMC knobs
+    Optional: `model` ("multiplicative" (default; unchanged behaviour) |
+    "additive" -- the measurement-error model of curveRweights >= 0.3.0, which
+    needs migration 010 and curveRcore >= 0.6.0 in the worker image), `fix_beta1`
+    ("true" (default) | "false"; additive only), `scale_predictor` ("se" (default) |
+    "pcov"; multiplicative only), and the MCMC knobs
     `iter`, `warmup`, `chains`, `adapt_delta`, `seed` (brms/Stan's own naming —
     NOT the same names as the bayesian calibration job's `sampling`/`warmup`).
     Runs as a fully separate job/process from calibration — a weights-fit
@@ -178,9 +182,21 @@ class JobSubmission(BaseModel):
                 "multiplate_group_ids, when provided, must be the same length "
                 "as curve_ids (parallel arrays)"
             )
+        # Weights jobs: `model` selects the weighting model (default
+        # 'multiplicative', the pre-0.3.0 behaviour, when omitted). Reject a typo
+        # here rather than failing inside the worker.
+        if self.script_type.startswith("weights_") and "model" in self.params:
+            if str(self.params["model"]) not in WEIGHTS_MODELS:
+                raise ValueError(
+                    "params.model must be one of: " + ", ".join(WEIGHTS_MODELS)
+                    + " (got %r)" % (self.params["model"],)
+                )
         # Merge the CV% shorthand into params unless the caller set it explicitly.
         if "cdan_cv" not in self.params:
             self.params["cdan_cv"] = self.cdan_cv_threshold
+
+
+WEIGHTS_MODELS = ("multiplicative", "additive")
 
 
 class JobStatus(BaseModel):

@@ -88,6 +88,7 @@ parse_args <- function(argv = commandArgs(trailingOnly = TRUE)) {
   p <- list(curve_ids = "", multiplate_group_ids = "",
             job_id = "local", progress_dir = tempdir(),
             method = "", design = "", scale_predictor = "se",
+            model = "multiplicative", fix_beta1 = "true",
             iter = "4000", warmup = "1000", chains = "4",
             adapt_delta = "0.95", seed = "")
   i <- 1L
@@ -233,9 +234,134 @@ save_weights <- function(conn, weights_df, fit_row, job_id) {
 # Mirrors fit_one_group()'s isolation contract in worker_curveR.R: opens its
 # OWN connection, never mutates parent state, returns a small result -- one
 # group's failure is caught here and never aborts the batch. ────────────────
+.weights_pkg_version <- function()
+  as.character(utils::packageVersion("curveRweights"))
+
+# curveRcore >= 0.6.0 carries the data contract (weights_contract(),
+# validate_weights_table()); older images simply skip validation on the
+# multiplicative path and refuse the additive one.
+.have_contract <- function()
+  requireNamespace("curveRcore", quietly = TRUE) &&
+    exists("weights_contract", envir = asNamespace("curveRcore"), inherits = FALSE)
+
+# Build the calib_weights rows for one group from a precision_weights fit. Pure
+# (no DB), so the row shape of both models is testable without a database.
+# pw$weights carries obs_id/sampleid/curve_id/se/pcov/sigma/w/w_norm (+ the
+# additive columns) but not patientid/timeperiod/dilution/agroup -- rejoin to
+# the original rows by the stable positional obs_id (as_weight_data() never
+# reorders/drops rows when drop_oor = FALSE, the default used here). agroup is
+# carried through regardless of whether it was one of --design's columns: it is
+# calib_samples identity/context, and the "Computed weights by design cell" UI
+# cross-tabs on it even when only timeperiod was used as the design column.
+build_weight_rows <- function(pw, sg, method, job_id, model = "multiplicative") {
+  ident <- sg[, c(".obs_id", "patientid", "timeperiod", "dilution", "agroup"), drop = FALSE]
+  wrow <- merge(pw$weights, ident, by.x = "obs_id", by.y = ".obs_id")
+  wrow$method <- method
+  wrow$job_id <- job_id
+  # as_weight_data() coerces curve_id to character (out$curve_id <-
+  # as.character(tidy$curve_id)) -- cast back for the bigint column, or
+  # dbAppendTable() may reject it or silently misbehave.
+  wrow$curve_id <- as.integer(wrow$curve_id)
+  wrow$model <- model
+  wrow$weights_pkg_version <- .weights_pkg_version()
+  cols <- c("curve_id", "method", "sampleid", "patientid", "timeperiod",
+            "dilution", "agroup", "se", "pcov", "sigma", "w", "w_norm", "job_id",
+            "model", "weights_pkg_version")
+  if (identical(model, "additive")) {
+    extra <- c("v_meas", "tau2", "reliability", "reliability_lo", "reliability_hi",
+               "censor_type", "bound")
+    cols <- c(cols, extra)
+    # Postgres would store NaN/Infinity as values; NULL is the honest "not defined".
+    for (cn in c("sigma", "w", "w_norm", extra[1:5], "bound"))
+      wrow[[cn]][!is.finite(wrow[[cn]])] <- NA_real_
+  }
+  wrow[, cols, drop = FALSE]
+}
+
+# One calib_weights_fit row for a group. The multiplicative row is the 0.2.x row
+# plus model/weights_pkg_version; the additive row fills tau/kappa/reliability
+# (phi is left NULL: it does not exist in that model).
+build_fit_row <- function(pw, gb, design_cols, scale_predictor, job_id, method,
+                          model = "multiplicative") {
+  est  <- pw$estimates
+  base <- data.frame(
+    multiplate_group_id = gb$gid, method = method,
+    antigen = gb$antigen, feature = gb$feature,
+    design_cols = paste(design_cols, collapse = ","),
+    scale_predictor = if (identical(model, "additive")) "se" else scale_predictor,
+    stringsAsFactors = FALSE)
+  if (!identical(model, "additive")) {
+    return(cbind(base, data.frame(
+      phi = est$phi, phi_lo = est$phi_CI[["lo"]], phi_hi = est$phi_CI[["hi"]],
+      beta1 = est$beta1, beta1_lo = est$beta1_CI[["lo"]], beta1_hi = est$beta1_CI[["hi"]],
+      interpretation = est$interpretation,
+      n_fit = as.integer(est$diagnostics$n_fit %||% NA_integer_),
+      n_eff = est$diagnostics$weight$n_eff %||% NA_real_,
+      weight_ratio = est$diagnostics$weight$weight_ratio %||% NA_real_,
+      job_id = job_id, model = model,
+      weights_pkg_version = .weights_pkg_version(),
+      stringsAsFactors = FALSE)))
+  }
+  ncens <- unlist(est$diagnostics$n_by_censoring)
+  cbind(base, data.frame(
+    beta1 = est$beta1, beta1_lo = est$beta1_CI[["lo"]], beta1_hi = est$beta1_CI[["hi"]],
+    interpretation = est$interpretation,
+    n_fit = as.integer(est$diagnostics$n_fit %||% NA_integer_),
+    n_eff = est$diagnostics$weight$n_eff %||% NA_real_,
+    weight_ratio = est$diagnostics$weight$weight_ratio %||% NA_real_,
+    job_id = job_id, model = model, weights_pkg_version = .weights_pkg_version(),
+    tau = est$tau, tau_lo = est$tau_CI[["lo"]], tau_hi = est$tau_CI[["hi"]],
+    kappa = est$kappa, kappa_lo = est$kappa_CI[["lo"]], kappa_hi = est$kappa_CI[["hi"]],
+    reliability = est$reliability,
+    reliability_lo = est$reliability_CI[["lo"]], reliability_hi = est$reliability_CI[["hi"]],
+    fix_beta1 = isTRUE(est$diagnostics$fix_beta1),
+    n_censored = as.integer(sum(ncens[intersect(names(ncens), c("left", "right", "interval"))])),
+    identifiability = est$interpretation,
+    stringsAsFactors = FALSE))
+}
+
+# Refuse to write rows the contract does not allow (e.g. tau filled in a
+# multiplicative row) before they reach the database.
+.validate_weight_rows <- function(wrow, fit_row, model) {
+  if (!.have_contract()) return(invisible(NULL))
+  curveRcore::validate_weights_table(wrow, "sample", model)
+  curveRcore::validate_weights_table(fit_row, "fit", model)
+  invisible(NULL)
+}
+
+# .append() silently drops data-frame columns the table lacks, so an un-migrated
+# DB would lose the additive columns with no error. Additive: hard stop.
+# Multiplicative: the 0.2.x path still works without them, so only say so.
+.check_weights_columns <- function(conn, model) {
+  have <- DBI::dbGetQuery(conn,
+    "SELECT table_name, column_name FROM information_schema.columns
+      WHERE table_schema = 'madi_results'
+        AND table_name IN ('calib_weights', 'calib_weights_fit')")
+  if (!.have_contract()) {
+    if (identical(model, "additive"))
+      stop("--model additive needs curveRcore >= 0.6.0 (weights_contract()) in this image.")
+    return(invisible(TRUE))
+  }
+  tbl <- c(sample = "calib_weights", fit = "calib_weights_fit")
+  miss <- unlist(lapply(names(tbl), function(k) {
+    need <- curveRcore::weights_contract(k, model = model)$column
+    m <- setdiff(need, have$column_name[have$table_name == tbl[[k]]])
+    if (length(m)) paste0(tbl[[k]], ": ", paste(m, collapse = ", "))
+  }))
+  if (length(miss)) {
+    msg <- paste0("madi_results weights tables lack column(s) -- apply ",
+                  "worker/migrations/010_calib_weights_model.sql first: ",
+                  paste(miss, collapse = "; "))
+    if (identical(model, "additive")) stop(msg)
+    message("note: ", msg, " (multiplicative rows will be written without them)")
+  }
+  invisible(TRUE)
+}
+
 fit_one_weights_group <- function(gb, method, design_cols, scale_predictor,
                                   iter, warmup, chains, adapt_delta, seed,
-                                  job_id, per_fit) {
+                                  job_id, per_fit, model = "multiplicative",
+                                  fix_beta1 = TRUE) {
   options(mc.cores = per_fit)
   # No DB read happens in this function (the batch was already fetched once,
   # in the parent, before forking) -- the connection is opened lazily, right
@@ -248,44 +374,22 @@ fit_one_weights_group <- function(gb, method, design_cols, scale_predictor,
     wd <- curveRweights::as_weight_data(
       sg, design = design_cols, source = "samples", include_plate = TRUE)
 
-    pw <- curveRweights::fit_precision_weights(
-      wd, scale_predictor = scale_predictor, plate_col = "curve_id",
-      iter = iter, warmup = warmup, chains = chains, cores = per_fit,
-      adapt_delta = adapt_delta, seed = seed)
+    pw <- if (identical(model, "additive")) {
+      # patientid/dilution/censor_* ride along from calib_samples via as_weight_data()
+      curveRweights::fit_precision_weights(
+        wd, model = "additive", plate_col = "curve_id", fix_beta1 = fix_beta1,
+        iter = iter, warmup = warmup, chains = chains, cores = per_fit,
+        adapt_delta = adapt_delta, seed = seed)
+    } else {
+      curveRweights::fit_precision_weights(
+        wd, scale_predictor = scale_predictor, plate_col = "curve_id",
+        iter = iter, warmup = warmup, chains = chains, cores = per_fit,
+        adapt_delta = adapt_delta, seed = seed)
+    }
 
-    # pw$weights carries obs_id/sampleid/curve_id/se/pcov/sigma/w/w_norm but
-    # not patientid/timeperiod/dilution/agroup -- rejoin to the original rows
-    # by the stable positional obs_id (as_weight_data() never reorders/drops
-    # rows when drop_oor = FALSE, the default used above). agroup is carried
-    # through regardless of whether it was one of --design's columns for THIS
-    # job (same as timeperiod/patientid/dilution) -- it's calib_samples
-    # identity/context, not just a design-fit input, and the "Computed weights
-    # by design cell" UI cross-tabs on it even when only timeperiod was used
-    # as the design column.
-    ident <- sg[, c(".obs_id", "patientid", "timeperiod", "dilution", "agroup"), drop = FALSE]
-    wrow <- merge(pw$weights, ident, by.x = "obs_id", by.y = ".obs_id")
-    wrow$method <- method
-    wrow$job_id <- job_id
-    # as_weight_data() coerces curve_id to character (out$curve_id <-
-    # as.character(tidy$curve_id)) -- cast back for the bigint column, or
-    # dbAppendTable() may reject it or silently misbehave.
-    wrow$curve_id <- as.integer(wrow$curve_id)
-    wrow <- wrow[, c("curve_id", "method", "sampleid", "patientid", "timeperiod",
-                     "dilution", "agroup", "se", "pcov", "sigma", "w", "w_norm", "job_id")]
-
-    est <- pw$estimates
-    fit_row <- data.frame(
-      multiplate_group_id = gb$gid, method = method,
-      antigen = gb$antigen, feature = gb$feature,
-      design_cols = paste(design_cols, collapse = ","),
-      scale_predictor = scale_predictor,
-      phi = est$phi, phi_lo = est$phi_CI[["lo"]], phi_hi = est$phi_CI[["hi"]],
-      beta1 = est$beta1, beta1_lo = est$beta1_CI[["lo"]], beta1_hi = est$beta1_CI[["hi"]],
-      interpretation = est$interpretation,
-      n_fit = as.integer(est$diagnostics$n_fit %||% NA_integer_),
-      n_eff = est$diagnostics$weight$n_eff %||% NA_real_,
-      weight_ratio = est$diagnostics$weight$weight_ratio %||% NA_real_,
-      job_id = job_id, stringsAsFactors = FALSE)
+    wrow    <- build_weight_rows(pw, sg, method, job_id, model)
+    fit_row <- build_fit_row(pw, gb, design_cols, scale_predictor, job_id, method, model)
+    .validate_weight_rows(wrow, fit_row, model)
 
     conn <- open_conn(); on.exit(try(DBI::dbDisconnect(conn), silent = TRUE), add = TRUE)
     save_weights(conn, wrow, fit_row, job_id)
@@ -312,6 +416,8 @@ main <- function() {
     stop("--design is required (comma-joined column names, e.g. timeperiod,agroup)")
 
   scale_predictor <- match.arg(P$scale_predictor, c("se", "pcov"))
+  model_kind <- match.arg(P$model, c("multiplicative", "additive"))
+  fix_beta1  <- !tolower(P$fix_beta1) %in% c("false", "f", "0", "no")
   iter        <- as.integer(P$iter)
   warmup      <- as.integer(P$warmup)
   chains      <- as.integer(P$chains)
@@ -326,7 +432,7 @@ main <- function() {
 
   batch <- suppressWarnings(as.integer(strsplit(trimws(P$curve_ids), "\\s*,\\s*")[[1]]))
   batch <- unique(batch[!is.na(batch)])
-  if (!length(batch)) { message("No curve_ids supplied. Exiting."); return(0L) }
+  if (!length(batch)) { message("No curve_ids supplied (nothing to do)."); return(3L) }
 
   worker_cores <- local({
     env <- suppressWarnings(as.integer(Sys.getenv("WORKER_CORES", "")))
@@ -337,11 +443,15 @@ main <- function() {
 
   conn <- open_conn(); on.exit(try(DBI::dbDisconnect(conn), silent = TRUE), add = TRUE)
   cs <- fetch_calib_samples(conn, batch, method)
+  .check_weights_columns(conn, model_kind)
   try(DBI::dbDisconnect(conn), silent = TRUE)
+  # Exit non-zero: supervisor.py marks the job `failed` (with this message) instead
+  # of `completed`. A weights job that did nothing must never look like a success.
   if (!nrow(cs)) {
     message("No calib_samples rows for this batch/method (", method,
-            "). Was calibration run (and persisted) for these curve_ids first? Exiting.")
-    return(0L)
+            "). Was calibration run (and persisted) for these curve_ids first? ",
+            "Nothing to do.")
+    return(3L)
   }
 
   gids <- unique(as.character(cs$multiplate_group_id))
@@ -360,8 +470,8 @@ main <- function() {
   pp_plan <- plan_parallelism(worker_cores, chains)
   np <- pp_plan$n_parallel; per_fit <- pp_plan$per_fit
 
-  message(sprintf("worker_weights: method=%s n_groups=%d design=%s job=%s",
-                  method, length(gids), paste(design_cols, collapse = ","), P$job_id))
+  message(sprintf("worker_weights: method=%s model=%s n_groups=%d design=%s job=%s",
+                  method, model_kind, length(gids), paste(design_cols, collapse = ","), P$job_id))
   message(sprintf("parallelism: %d group(s) at once x %d core(s)/fit (cores=%d)",
                   np, per_fit, worker_cores))
   write_progress(P$progress_dir, P$job_id, total_groups, done, "running")
@@ -382,7 +492,7 @@ main <- function() {
 
   run_one <- function(gb) fit_one_weights_group(
     gb, method, design_cols, scale_predictor, iter, warmup, chains,
-    adapt_delta, seed, P$job_id, per_fit)
+    adapt_delta, seed, P$job_id, per_fit, model_kind, fix_beta1)
 
   if (np <= 1L) {
     for (gb in bundles) {
