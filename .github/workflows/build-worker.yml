@@ -142,18 +142,35 @@ jobs:
             echo "| $pkg | \`$ref\` | \`$sha\` |" >> "$GITHUB_STEP_SUMMARY"
           done
 
+      # Human-readable package versions (configured refs, "v" stripped), used for
+      # a package-specific image tag and for image labels. The build-args below
+      # carry commit SHAs; these carry the tag names people recognise.
+      - name: Compose package-version tag
+        id: pkgtag
+        run: |
+          echo "tag=core${CURVERCORE_REF#v}-freq${CURVERFREQ_REF#v}-bayes${CURVERBAYES_REF#v}-weights${CURVERWEIGHTS_REF#v}" >> "$GITHUB_OUTPUT"
+
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           # Branch pushes -> :main (unchanged). Tag vX.Y.Z -> :X.Y.Z and :X.Y.
+          # Tag pushes also get :X.Y.Z-core<v>-freq<v>-bayes<v>-weights<v>, so a
+          # manifest or docker-compose file can pin an image by the curveR package
+          # versions inside it (e.g. 1.0.0-core0.6.0-freq0.5.1-bayes0.5.1-weights0.3.0).
           # latest=false: don't auto-move a :latest tag (preprod pins explicit
           # versions in the manifest). Flip to latest=auto if you want :latest.
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{version}}-${{ steps.pkgtag.outputs.tag }}
+          labels: |
+            io.immunoplex.curvercore.ref=${{ env.CURVERCORE_REF }}
+            io.immunoplex.curverfreq.ref=${{ env.CURVERFREQ_REF }}
+            io.immunoplex.curverbayes.ref=${{ env.CURVERBAYES_REF }}
+            io.immunoplex.curverweights.ref=${{ env.CURVERWEIGHTS_REF }}
           flavor: |
             latest=false
 

@@ -74,10 +74,16 @@ ENV CMDSTAN=/opt/cmdstan/current
 # cache-busts ONLY that layer (and the layers after it). force=TRUE additionally
 # guarantees the fitters are recompiled against the curveRcore just installed,
 # even when a DESCRIPTION Version string is unchanged.
-ARG CURVERCORE_REF=v0.5.2
+ARG CURVERCORE_REF=v0.6.0
 ARG CURVERFREQ_REF=v0.5.1
 ARG CURVERBAYES_REF=v0.5.1
-ARG CURVERWEIGHTS_REF=v0.2.2
+ARG CURVERWEIGHTS_REF=v0.3.0
+
+# Record the package versions in the image (CI also sets these as labels).
+LABEL io.immunoplex.curvercore.ref="${CURVERCORE_REF}" \
+      io.immunoplex.curverfreq.ref="${CURVERFREQ_REF}" \
+      io.immunoplex.curverbayes.ref="${CURVERBAYES_REF}" \
+      io.immunoplex.curverweights.ref="${CURVERWEIGHTS_REF}"
 
 # curveRcore first — the fitters build against it.
 # R's download.file() default timeout is 60s (getOption("timeout")). The
