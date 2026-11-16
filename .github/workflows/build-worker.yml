@@ -148,7 +148,10 @@ jobs:
       - name: Compose package-version tag
         id: pkgtag
         run: |
-          echo "tag=core${CURVERCORE_REF#v}-freq${CURVERFREQ_REF#v}-bayes${CURVERBAYES_REF#v}-weights${CURVERWEIGHTS_REF#v}" >> "$GITHUB_OUTPUT"
+          pk="core${CURVERCORE_REF#v}-freq${CURVERFREQ_REF#v}-bayes${CURVERBAYES_REF#v}-weights${CURVERWEIGHTS_REF#v}"
+          echo "tag=${pk}" >> "$GITHUB_OUTPUT"
+          # <repo version>-<package versions>; only used for tag pushes (vX.Y.Z...)
+          echo "full=${GITHUB_REF_NAME#v}-${pk}" >> "$GITHUB_OUTPUT"
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
@@ -165,7 +168,7 @@ jobs:
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{version}}-${{ steps.pkgtag.outputs.tag }}
+            type=raw,value=${{ steps.pkgtag.outputs.full }},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
           labels: |
             io.immunoplex.curvercore.ref=${{ env.CURVERCORE_REF }}
             io.immunoplex.curverfreq.ref=${{ env.CURVERFREQ_REF }}
