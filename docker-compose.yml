@@ -3,7 +3,7 @@
 #
 # Services:
 #   i-spi-compute-redis   — Redis 7 for job queue and status
-#   i-spi-compute-api     — FastAPI batch job API (port 8000)
+#   i-spi-compute-api     — FastAPI job API (port 8000)
 #   i-spi-compute-worker  — R worker with Python supervisor
 #
 # Secrets: values come from a .env file in this directory (plain KEY=value,
@@ -13,11 +13,12 @@
 # Usage:
 #   docker compose up --build
 #
-#   # Submit a job:
+#   # Submit a job (curve_ids are madi_results.curve_lookup.curve_id values;
+#   # script_type: frequentist | bayesian | weights_frequentist | weights_bayesian):
 #   curl -X POST http://localhost:8000/jobs \
 #     -H "Content-Type: application/json" \
 #     -H "X-API-Key: ${API_KEY}" \
-#     -d '{"project_id":1,"study":"MY_STUDY","experiment":"EXP1","scope":"experiment"}'
+#     -d '{"curve_ids":[101,102],"script_type":"frequentist","params":{}}'
 #
 #   # Swagger docs:  open http://localhost:8000/docs
 # =============================================================================

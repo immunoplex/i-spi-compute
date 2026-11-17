@@ -1,15 +1,17 @@
 # =============================================================================
 # i-spi-compute-SIM — parallel clone for a big simulation run
 # namespace: madi-preprod
-# curveR (curveRcore v0.5.2, curveRfreq/curveRbayes v0.5.1, curveRweights v0.2.2;
+# curveR (curveRcore v0.6.0, curveRfreq/curveRbayes v0.5.1, curveRweights v0.3.0;
 # pins live in .github/workflows/build-worker.yml). Image :main is rebuilt by
-# CI; deploy = commit this file to dartmouth/k8s-madi (preprod-rcikube6/), then
-# delete the worker pod in Rancher. Needs DB migrations 008 + 009 (applied).
+# CI; release images are tagged :X.Y.Z and :X.Y.Z-core<v>-freq<v>-bayes<v>-weights<v>.
+# Deploy = commit this file to dartmouth/k8s-madi (preprod-rcikube6/), then
+# delete the worker pod in Rancher. Needs DB migrations up to 010
+# (worker/migrations/; all applied to the shared preprod DB).
 # Resources unchanged: per-sample Monte Carlo intervals (freq, 1000 draws) and
 # the extra Bayesian draw matrix fit well within the 16 CPU / 16Gi limits.
 # This is a SECOND parallel stack, cloned from i-spi-compute, that must NOT
-# collide with EITHER the production batch calculator (immunoplex-batch-cal-*)
-# OR the existing i-spi-compute stack.
+# collide with the existing i-spi-compute stack (or with the retired batch
+# calculator's immunoplex-batch-cal-* names, if those are still on the cluster).
 #
 # What changed vs i-spi-compute:
 #   - Every resource name + every `app:` label/selector: i-spi-compute-*  ->  i-spi-compute-sim-*

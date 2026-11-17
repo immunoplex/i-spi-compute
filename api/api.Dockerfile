@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
-LABEL org.opencontainers.image.source=https://github.com/immunoplex/immunoplex-batch-cal-api
-LABEL org.opencontainers.image.description="Immunoplex Batch Runner — API"
+LABEL org.opencontainers.image.source=https://github.com/immunoplex/i-spi-compute
+LABEL org.opencontainers.image.description="i-spi-compute — job API (FastAPI)"
 
 WORKDIR /app
 

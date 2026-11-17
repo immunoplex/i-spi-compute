@@ -20,7 +20,7 @@
 # 4.5.2 is the R the curveR 0.5.0 release set was tested on.
 FROM rocker/tidyverse:4.5.2
 
-LABEL org.opencontainers.image.source=https://github.com/immunoplex/i-spi-compute-worker
+LABEL org.opencontainers.image.source=https://github.com/immunoplex/i-spi-compute
 LABEL org.opencontainers.image.description="i-spi-compute — Worker (curveR)"
 
 # ── System dependencies ──────────────────────────────────────────────────────

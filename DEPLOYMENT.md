@@ -301,8 +301,10 @@ but it caches; rebuilds that only change scripts are fast.
 `search_path=madi_results` on connect.
 
 **One-time migration (out of band, before first run):** apply
-`calib_schema_v1.sql`. It is **non-destructive** — it creates only the new
-`calib_*` tables and touches nothing in the legacy `bayes_*` tables.
+`calib_schema_v1.sql`, then the numbered migrations in `worker/migrations/`
+(003-010, in order; see `worker/migrations/README.md`). It is
+**non-destructive** — it creates only the new `calib_*` tables and touches
+nothing in the legacy `bayes_*` tables.
 
 **Also required before first run:** the `*_for_fit` input views
 (`standard_for_fit`, `blank_for_fit`, `sample_for_fit`) and the

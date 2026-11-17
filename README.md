@@ -193,6 +193,7 @@ i-spi-compute/
     requirements.txt
   db/
     calib_schema_v1.sql    # one-time migration: creates the calib_* tables
+  worker/migrations/       # numbered follow-on migrations (003-010); see its README.md
   docker-compose.yml       # local dev stack
   i-spi-compute.k8s.yaml   # Kubernetes manifests (namespace madi-preprod)
   DEPLOYMENT.md            # full deployment & configuration reference

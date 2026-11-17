@@ -260,7 +260,7 @@ app = FastAPI(
         "`script_type`.\n\n"
         "**Authentication**: Pass `X-API-Key` header on all requests (except `/health`)."
     ),
-    version="0.3.0",
+    version="1.0.0",
     root_path=os.getenv("ROOT_PATH", ""),
 )
 
