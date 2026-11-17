@@ -47,10 +47,19 @@ RUN R -e "install.packages(c('remotes','DBI','RPostgres','jsonlite','loo','R6'),
 # BEFORE curveRbayes so its Stan models can compile against a present CmdStan.
 # A stable 'current' symlink lets CMDSTAN point at the install regardless of
 # version or the runtime user's HOME.
+#
+# CMDSTAN_VERSION is pinned so two builds of the same tag compile the Stan models
+# with the same CmdStan (the default, "latest", changes under a fixed tag). With
+# an explicit version, install_cmdstan() downloads the release tarball directly
+# and skips the api.github.com "latest release" lookup, which unauthenticated CI
+# builds can be refused (seen 2026-11-17). 2.40.0 is what the v1.0.0 images got.
+ARG CMDSTAN_VERSION=2.40.0
+LABEL io.immunoplex.cmdstan.version="${CMDSTAN_VERSION}"
 RUN R -e "install.packages('cmdstanr', repos=c('https://stan-dev.r-universe.dev', getOption('repos')))"
 RUN mkdir -p /opt/cmdstan \
-    && R -e "cmdstanr::install_cmdstan(dir='/opt/cmdstan', cores=parallel::detectCores())" \
-    && ln -sfn /opt/cmdstan/cmdstan-* /opt/cmdstan/current
+    && R -e "options(timeout = 600); cmdstanr::install_cmdstan(dir='/opt/cmdstan', version='${CMDSTAN_VERSION}', cores=parallel::detectCores())" \
+    && ln -sfn /opt/cmdstan/cmdstan-${CMDSTAN_VERSION} /opt/cmdstan/current \
+    && test -x /opt/cmdstan/current/bin/stanc
 ENV CMDSTAN=/opt/cmdstan/current
 
 # ── curveR ecosystem ─────────────────────────────────────────────────────────

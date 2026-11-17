@@ -77,6 +77,9 @@ env:
   CURVERFREQ_REF: v0.5.1
   CURVERBAYES_REF: v0.5.1
   CURVERWEIGHTS_REF: v0.3.0
+  # CmdStan used to compile the Stan models. Pinned for reproducible builds; see
+  # the CmdStan section of worker/worker.Dockerfile.
+  CMDSTAN_VERSION: 2.40.0
 
 jobs:
   build-and-push:
@@ -174,6 +177,7 @@ jobs:
             io.immunoplex.curverfreq.ref=${{ env.CURVERFREQ_REF }}
             io.immunoplex.curverbayes.ref=${{ env.CURVERBAYES_REF }}
             io.immunoplex.curverweights.ref=${{ env.CURVERWEIGHTS_REF }}
+            io.immunoplex.cmdstan.version=${{ env.CMDSTAN_VERSION }}
           flavor: |
             latest=false
 
@@ -192,6 +196,7 @@ jobs:
             CURVERFREQ_REF=${{ steps.refs.outputs.curveRfreq }}
             CURVERBAYES_REF=${{ steps.refs.outputs.curveRbayes }}
             CURVERWEIGHTS_REF=${{ steps.refs.outputs.curveRweights }}
+            CMDSTAN_VERSION=${{ env.CMDSTAN_VERSION }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
