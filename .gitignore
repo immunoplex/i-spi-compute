@@ -10,7 +10,6 @@ venv/
 .RData
 .Rproj.user/
 *.RData
-worker/migrations/
 worker/scratch/
 
 # Docker
