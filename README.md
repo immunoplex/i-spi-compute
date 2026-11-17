@@ -332,3 +332,7 @@ Full detail: `DEPLOYMENT.md` §12 (runbook), §14 (ingress); `SECRETS.md` (secre
 
 Full details, including the secret topology and the `WORKER_CORES` rationale, are
 in `DEPLOYMENT.md`.
+
+## Use of AI
+
+The maintainer uses an AI assistant (Claude) to help check that the statistical analysis of assay responses is carried from the curveR packages into the database intact, and to draft code, migrations and documentation. All changes are reviewed and approved by the maintainer. What AI did, what people did, and how output is verified are described in [AI_USE](AI_USE.md).
