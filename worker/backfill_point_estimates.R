@@ -30,6 +30,22 @@
 BACKFILL_JOB_ID <- "backfill-0.7.0"
 `%||%` <- function(a, b) if (is.null(a) || length(a) == 0) b else a
 
+# point_estimates.R sits beside this script (sourced copy, Rscript, or /app).
+if (!exists("pe_compute_one", mode = "function")) local({
+  dirs <- character()
+  for (i in rev(seq_len(sys.nframe()))) {
+    of <- sys.frame(i)$ofile
+    if (!is.null(of) && nzchar(of)) { dirs <- c(dirs, dirname(normalizePath(of))); break }
+  }
+  f <- grep("^--file=", commandArgs(FALSE), value = TRUE)
+  if (length(f)) dirs <- c(dirs, dirname(normalizePath(sub("^--file=", "", f[1]))))
+  dirs <- c(dirs, Sys.getenv("WORKER_COMPONENTS_DIR", ""), getwd(), file.path(getwd(), "worker"), "/app")
+  hit <- file.path(dirs[nzchar(dirs)], "point_estimates.R")
+  hit <- hit[file.exists(hit)]
+  if (!length(hit)) stop("point_estimates.R not found beside backfill_point_estimates.R")
+  source(hit[1])
+})
+
 .in_ids <- function(x) {
   v <- suppressWarnings(as.integer(x)); v <- v[!is.na(v)]
   if (!length(v)) "NULL" else paste(unique(v), collapse = ",")
@@ -127,110 +143,16 @@ bf_load <- function(conn, curve_ids) {
   )
 }
 
-.as_bool <- function(x, default) {
-  x <- tolower(trimws(as.character(x %||% NA)))
-  if (is.na(x[1])) default else x[1] %in% c("true", "t", "1", "yes")
-}
-
-# Response scale of a curve: inferred from its stored standards (response_model
-# vs the raw response) when unambiguous, else the resolved setting.
-bf_is_log_response <- function(std, setting) {
-  ok <- is.finite(std$response_model) & is.finite(std$assay_response_raw) & std$assay_response_raw > 0
-  if (sum(ok) >= 2L) {
-    d_log <- stats::median(abs(std$response_model[ok] - log10(std$assay_response_raw[ok])))
-    d_lin <- stats::median(abs(std$response_model[ok] - std$assay_response_raw[ok]))
-    if (d_log < 1e-6) return(TRUE)
-    if (d_lin < 1e-6) return(FALSE)
-  }
-  setting
-}
-
-# Back-calculate one (curve, method). Returns list(standards, controls, sources).
-bf_compute_one <- function(L, cid, method, model_name) {
-  cid <- as.numeric(cid)
-  sel <- function(d) {
-    if (!is.data.frame(d) || !nrow(d)) return(d)
-    keep <- d$curve_id == cid
-    if ("method" %in% names(d)) keep <- keep & d$method == method
-    d[keep, , drop = FALSE]
-  }
-  pr <- sel(L$params)
-  params <- stats::setNames(as.numeric(pr$estimate), pr$term)
-  dg <- sel(L$diag)
-  if (!length(params) || !nrow(dg)) return(NULL)
-  dg <- dg[1, ]
-  st <- sel(L$settings)
-  sv <- function(nm, default) .as_bool(st$value_text[st$param_name == nm], default)
-
-  std <- sel(L$standards)
-  xs <- sel(L$x_scale)
-  log_x <- if (nrow(xs) && !is.na(xs$log_x[1])) isTRUE(xs$log_x[1]) else sv("is_log_independent", TRUE)
-  log_y <- bf_is_log_response(std, sv("is_log_response", TRUE))
-
-  dr <- sel(L$draws)
-  curve_draws <- if (nrow(dr)) { d <- dr[dr$param_scope == "curve", ]; stats::setNames(d$draws, d$term) } else NULL
-  # a fixed lower asymptote is stored as a one-element 'a' draw (sample_kind 'fixed')
-  fixed_a <- NULL
-  if (!"a" %in% names(params) && length(curve_draws$a) == 1L) fixed_a <- curve_draws$a
-  noise <- NULL
-  if (method == "bayesian" && nrow(dr) && sv("include_measurement_error", TRUE)) {
-    pop <- dr[dr$param_scope == "population", ]
-    g <- function(t) if (t %in% pop$term) pop$draws[[match(t, pop$term)]] else NULL
-    nm <- sel(L$noise_model)
-    if (!is.null(g("sigma_obs")) && !is.null(g("nu")))
-      noise <- list(sigma_obs = g("sigma_obs"), nu = g("nu"), log_sigma0 = g("log_sigma0"),
-                    log_sigma_slope = g("log_sigma_slope"),
-                    use_hetero = .as_bool(nm$use_hetero, FALSE))
-  }
-  limits <- as.list(dg[c("lloq_log10", "uloq_log10", "lower_lod_response", "upper_lod_response",
-                         "lower_lod_log10_conc", "upper_lod_log10_conc", "inflect_x")])
-  limits <- lapply(limits, function(v) suppressWarnings(as.numeric(v)))
-  num <- function(v, d) { v <- suppressWarnings(as.numeric(v)); if (length(v) && is.finite(v)) v else d }
-  est <- function(response, dilution, nominal = NULL, seed)
-    curveRcore::estimate_points_from_stored(
-      response, dilution, model_name, params, method,
-      grid = sel(L$grid), limits = limits, draws = curve_draws, fixed_a = fixed_a,
-      noise = noise, is_log_independent = log_x, nominal = nominal,
-      cv_x_max = num(dg$cv_x_max, 150), pcov_threshold = num(dg$pcov_threshold, 20),
-      decision_cutoff = num(dg$decision_cutoff, NULL), seed = seed)
-
-  out <- list(standards = NULL, controls = NULL, sources = character())
-  if (nrow(std)) {
-    nominal <- if (log_x) std$log10_concentration else std$concentration
-    e <- est(as.numeric(std$response_model), as.numeric(std$dilution), as.numeric(nominal),
-             seed = as.integer(cid %% 2147483647))
-    out$sources <- c(out$sources, attr(e, "se_source"))
-    # included / exclusion_reason ride along for validation only; not updated
-    out$standards <- cbind(std[, c("curve_id", "method", "well", "dilution", "included",
-                                   "exclusion_reason")], e)
-  }
-  ct <- sel(L$controls)
-  if (nrow(ct)) {
-    ct <- ct[!duplicated(ct$well), , drop = FALSE]
-    raw <- suppressWarnings(as.numeric(ct$mfi))
-    resp <- if (log_y) log10(pmax(raw, 1e-6)) else raw
-    dil <- suppressWarnings(as.numeric(ct$dilution)); dil[!is.finite(dil)] <- 1
-    e <- est(resp, dil, seed = as.integer((cid + 1) %% 2147483647))
-    out$sources <- c(out$sources, attr(e, "se_source"))
-    inc <- !(as.logical(ct$masked) %in% TRUE)
-    out$controls <- cbind(data.frame(
-      curve_id = cid, method = method, well = as.character(ct$well),
-      sampleid = as.character(ct$sampleid), source = as.character(ct$control_source),
-      dilution = suppressWarnings(as.numeric(ct$dilution)),
-      included = inc, exclusion_reason = ifelse(inc, "none", "masked"),
-      mask_reason = as.character(ct$mask_reason),
-      response_model = resp, assay_response_raw = raw, stringsAsFactors = FALSE), e,
-      job_id = BACKFILL_JOB_ID)
-  }
-  out
-}
-
-.est_cols <- function() curveRcore::point_estimates_contract("standards", estimates_only = TRUE)$column
+# The calculation itself lives in point_estimates.R (shared with the worker,
+# which runs it right after each fit), so a backfilled curve and a new curve get
+# identical calculations.
+bf_compute_one <- function(L, cid, method, model_name)
+  pe_compute_one(L, cid, method, model_name, job_id = BACKFILL_JOB_ID)
 
 bf_write <- function(conn, std, ctl) {
   if (is.data.frame(std) && nrow(std)) {
     curveRcore::validate_point_estimates(std, "standards")
-    cols <- intersect(.est_cols(), names(std))
+    cols <- intersect(pe_est_cols(), names(std))
     tmp <- std[, c("curve_id", "method", "well", "dilution", cols)]
     DBI::dbWriteTable(conn, "bf_std_tmp", tmp, temporary = TRUE, overwrite = TRUE)
     DBI::dbExecute(conn, sprintf(
