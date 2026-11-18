@@ -23,6 +23,9 @@
 #   R  control_reference + calib_controls_qc give recovery for the control
 #   B  bayesian fit with persisted draws: controls agree with the engine's
 #      sample estimates within Monte Carlo error
+#   W  worker path: the same fits saved again the way worker_curveR.R does
+#      (pe_attach right after the fit, then save_calib) give exactly the values
+#      the backfill wrote, replace the previous controls, and carry the job_id
 # =============================================================================
 suppressMessages({ library(DBI); library(RPostgres) })
 port <- Sys.getenv("PGPORT", "54332"); psql <- Sys.getenv("PSQL", "psql")
@@ -124,6 +127,45 @@ add_controls <- function(cid, plate, n = 8) {
              timeperiod = s$timeperiod, masked = ctl$masked)
 }
 
+# The worker's save path: estimates from the in-memory flattened fit, then save.
+store_fit_worker <- function(method, job_id, mp, pp, cids, inc_me = TRUE) {
+  flat <- flatten_result(mp, job_id = job_id, method = method)
+  pts <- flatten_calib_points(pp, job_id = job_id, method = method, response_var = "mfi",
+                              is_log_independent = TRUE)
+  flat$standards <- pts$standards; flat$blanks <- pts$blanks
+  ctl <- dbGetQuery(con, sprintf("SELECT curve_id, well, sampleid, control_source, dilution, mfi, masked, mask_reason
+                                    FROM control_for_fit WHERE curve_id IN (%s)", paste(cids, collapse = ",")))
+  flat <- pe_attach(flat, ctl, is_log_response = TRUE, is_log_independent = TRUE,
+                    include_measurement_error = inc_me, job_id = job_id)
+  save_calib(con, flat, verbose = FALSE)
+  invisible(flat)
+}
+# Every estimate column equal (numbers to 1e-10, classes exactly).
+same_estimates <- function(a, b, keys) {
+  a <- a[do.call(order, a[keys]), ]; b <- b[do.call(order, b[keys]), ]
+  if (nrow(a) != nrow(b) || !identical(as.character(a$well), as.character(b$well))) return(FALSE)
+  ok <- vapply(intersect(pe_est_cols(), names(a)), function(k) {
+    x <- a[[k]]; y <- b[[k]]
+    if (is.numeric(x) || is.numeric(y)) {
+      x <- as.numeric(x); y <- as.numeric(y)
+      identical(is.na(x), is.na(y)) && isTRUE(all.equal(x[!is.na(x)], y[!is.na(y)], tolerance = 1e-10))
+    } else identical(as.character(x), as.character(y))
+  }, logical(1))
+  if (!all(ok)) cat("    differing columns:", paste(names(ok)[!ok], collapse = ", "), "\n")
+  all(ok)
+}
+worker_vs_backfill <- function(id, method, job_id, mp, pp, cids) {
+  q <- function(t) dbGetQuery(con, sprintf("SELECT * FROM %s WHERE method = '%s' AND curve_id IN (%s)",
+                                           t, method, paste(cids, collapse = ",")))
+  bs <- q("calib_standards"); bc <- q("calib_controls")
+  store_fit_worker(method, job_id, mp, pp, cids)
+  ws <- q("calib_standards"); wc <- q("calib_controls")
+  check(id, nrow(wc) == nrow(bc) && nrow(ws) == nrow(bs), sprintf("re-save replaces rows: %d standards, %d controls (no duplicates)", nrow(ws), nrow(wc)))
+  check(id, same_estimates(ws, bs, c("curve_id", "well", "dilution")), "standard estimates identical to the backfill")
+  check(id, same_estimates(wc, bc, c("curve_id", "well")), "control estimates identical to the backfill")
+  check(id, all(wc$job_id == job_id) && all(ws$job_id == job_id), sprintf("standards and controls carry job_id %s", job_id))
+}
+
 compare_to_engine <- function(id, method, cid, map, tol_x, tol_pcov) {
   cc <- dbGetQuery(con, sprintf("SELECT * FROM calib_controls WHERE curve_id = %d AND method = '%s'", cid, method))
   sm <- dbGetQuery(con, sprintf("SELECT * FROM calib_samples WHERE curve_id = %d AND method = '%s'", cid, method))
@@ -183,6 +225,10 @@ compare_to_engine("F", "frequentist", 1L, map1, tol_x = 1e-6, tol_pcov = 0.01)
 again <- backfill_point_estimates(con, verbose = FALSE)
 check("F", again$pairs == 0, "second run has nothing to do (resumable)")
 
+cat("\nW: worker path, frequentist\n")
+worker_vs_backfill("W", "frequentist", "job-W", mpf, list(data = std, blanks = NULL), 1:2)
+check("W", backfill_point_estimates(con, verbose = FALSE)$pairs == 0, "backfill finds nothing to do after a worker save")
+
 # ---- R: reference values ----------------------------------------------------------
 cat("\nR: control_reference + calib_controls_qc\n")
 invisible(dbExecute(con, "INSERT INTO control_reference (project_id, control_source, antigen, expected_conc, expected_sd, lower_limit, upper_limit, basis)
@@ -209,6 +255,8 @@ if (!identical(Sys.getenv("E2E_SKIP_BAYES"), "1")) {
   check("B", tot$pairs == 1 && tot$controls == nrow(map3), "bayesian pair processed")
   check("B", all(tot$sources == "draws"), "se from the stored draws for every point")
   compare_to_engine("B", "bayesian", 3L, map3, tol_x = 0.15, tol_pcov = 0.15)
+  cat("\nW: worker path, bayesian\n")
+  worker_vs_backfill("W", "bayesian", "job-WB", mpb, list(data = pp3$data, blanks = NULL), 3L)
 }
 
 dbDisconnect(con)

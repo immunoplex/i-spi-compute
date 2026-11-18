@@ -651,7 +651,7 @@ save_calib <- function(conn, flat, schema = "madi_results", verbose = TRUE) {
   ids <- union(
     flat$curve_ids[is.finite(flat$curve_ids)],
     .frame_ids(flat$fit, flat$grid, flat$samples, flat$diagnostics,
-               flat$standards, flat$blanks))
+               flat$standards, flat$blanks, flat$controls))
   if (!length(ids)) { warning("no curve_ids to save"); return(invisible(NULL)) }
   id_list <- paste(ids, collapse = ",")
   mq <- DBI::dbQuoteLiteral(conn, method)
@@ -670,6 +670,13 @@ save_calib <- function(conn, flat, schema = "madi_results", verbose = TRUE) {
         "DELETE FROM %s.%s WHERE method = %s AND curve_id IN (%s)",
         schema, t, mq, id_list))
     }
+    # calib_controls (migration 011) is replaced with the fit, also when the
+    # refit has no controls, so no curve keeps another fit's control estimates.
+    has_controls <- .has_table(conn, schema, "calib_controls")
+    if (has_controls)
+      DBI::dbExecute(conn, sprintf(
+        "DELETE FROM %s.calib_controls WHERE method = %s AND curve_id IN (%s)",
+        schema, mq, id_list))
 
     # insert in FK order: parents (fit) before children (param/gate/loo);
     # grid/samples/diagnostics/standards/blanks reference curve_lookup, so they
@@ -688,6 +695,7 @@ save_calib <- function(conn, flat, schema = "madi_results", verbose = TRUE) {
     .append_draws(conn, schema, "calib_draws", flat$draws)
     .append(conn, schema, "calib_standards",   flat$standards)
     .append(conn, schema, "calib_blanks",      flat$blanks)
+    if (has_controls) .append(conn, schema, "calib_controls", flat$controls)
     TRUE
   }, error = function(e) { DBI::dbRollback(conn); stop("save_calib failed: ",
                                                        conditionMessage(e), call. = FALSE) })
@@ -695,13 +703,18 @@ save_calib <- function(conn, flat, schema = "madi_results", verbose = TRUE) {
 
   if (verbose) {
     n <- function(d) if (is.null(d)) 0L else nrow(d)
-    message(sprintf("Saved method=%s curves=%d | fit=%d param=%d gate=%d grid=%d samples=%d diag=%d loo=%d std=%d blank=%d",
+    message(sprintf("Saved method=%s curves=%d | fit=%d param=%d gate=%d grid=%d samples=%d diag=%d loo=%d std=%d blank=%d control=%d",
                     method, length(ids), n(flat$fit), n(flat$param), n(flat$gate),
                     n(flat$grid), n(flat$samples), n(flat$diagnostics), n(flat$loo),
-                    n(flat$standards), n(flat$blanks)))
+                    n(flat$standards), n(flat$blanks), n(flat$controls)))
   }
   invisible(TRUE)
 }
+
+# TRUE when schema.table exists (tables added by a later migration).
+.has_table <- function(conn, schema, table)
+  !is.na(DBI::dbGetQuery(conn, sprintf("SELECT to_regclass(%s) AS t",
+    DBI::dbQuoteLiteral(conn, paste0(schema, ".", table))))$t[1])
 
 # append df, keeping only columns that exist in the target table (robust to
 # schema/column drift); no-op on NULL/empty.

@@ -38,6 +38,13 @@ close the backfilled values are to what the engine would have stored is in
 curveRcore's `calib_points_SPEC.md` ("Backfill"); `worker/tests/e2e_backfill_pg.sh`
 checks it against the real engines on a throwaway PostgreSQL.
 
+New fits need no backfill: the worker computes the same values right after each
+fit and saves them with it (`worker/point_estimates.R`, shared by the worker and
+the backfill, so both give identical values; the e2e test checks this). If that
+step fails for a group, the fit is still saved without them and the backfill
+fills them later. Against a database without 011 the worker still runs; the new
+values are just not stored.
+
 Prerequisites these files do **not** create: `curve_lookup` (with
 `multiplate_group_id`), the `xmap_*` tables, the `*_unmasked` and `*_for_fit`
 views, `calib_settings` / `calib_settings_meta` and the `resolve_settings*`

@@ -165,7 +165,7 @@ RUN R -e "for (m in c('logistic4','logistic5','loglogistic4','loglogistic5','gom
 WORKDIR /app
 COPY supervisor.py entrypoint.sh \
      worker_curveR.R worker_weights.R flatten_and_save.R verify_saved.R \
-     backfill_point_estimates.R \
+     point_estimates.R backfill_point_estimates.R \
      ./
 RUN chmod +x entrypoint.sh
 

@@ -17,8 +17,12 @@
 #   4. dispatch: curveRbayes::fit_calibration_bayes()   (hierarchical, pooled)
 #             or curveRfreq::fit_calibration_freq_multiplate()  (independent)
 #   5. compute_detection_limits_multiplate()
-#   6. flatten_result() + flatten_calib_points() → save_calib()  (curve_id-keyed)
-#   7. verify_saved()   → progress JSON
+#   6. flatten_result() + flatten_calib_points()
+#   7. pe_attach(): back-calculated estimates for the standard points and the
+#      control wells (control_for_fit, masked included), from the same flattened
+#      fit -- the calculation the one-off backfill uses (point_estimates.R)
+#   8. save_calib()  (curve_id-keyed, one transaction)
+#   9. verify_saved()   → progress JSON
 #
 # The views already carry curve_id, multiplate_group_id, antigen, feature,
 # source, mfi, masked, mask_reason (and the columns preprocess/fit/persist need),
@@ -56,7 +60,7 @@ suppressWarnings(suppressMessages({
 
 # Load sibling components, searching a few plausible locations, and skipping any
 # already defined (e.g. pre-sourced by a harness). An env override wins if set.
-for (f in c("flatten_and_save.R", "verify_saved.R")) {
+for (f in c("flatten_and_save.R", "verify_saved.R", "point_estimates.R")) {
   cand <- unique(file.path(c(Sys.getenv("WORKER_COMPONENTS_DIR", ""),
                              .script_dir, file.path(.script_dir, "worker"),
                              getwd(), file.path(getwd(), "worker")), f))
@@ -64,9 +68,9 @@ for (f in c("flatten_and_save.R", "verify_saved.R")) {
   if (length(hit)) source(hit[1])
 }
 # Fail loudly rather than dying later with "could not find function flatten_result".
-if (!all(vapply(c("flatten_result", "save_calib", "verify_saved"),
+if (!all(vapply(c("flatten_result", "save_calib", "verify_saved", "pe_attach"),
                 exists, logical(1), mode = "function"))) {
-  stop("Could not load flatten_and_save.R / verify_saved.R beside worker_curveR.R.\n",
+  stop("Could not load flatten_and_save.R / verify_saved.R / point_estimates.R beside worker_curveR.R.\n",
        "Searched near: ", .script_dir,
        "\nPut them in the same folder, or set WORKER_COMPONENTS_DIR.")
 }
@@ -133,6 +137,12 @@ fetch_blk_for_fit <- function(conn, curve_ids) DBI::dbGetQuery(conn, sprintf(
 # Unmasked samples only.
 fetch_smp_for_fit <- function(conn, curve_ids) DBI::dbGetQuery(conn, sprintf(
   "SELECT * FROM madi_results.sample_for_fit WHERE curve_id IN (%s)", .in_ids(curve_ids)))
+# Control wells, masked included (migration 011). Empty when the view does not
+# exist yet, so the worker still runs against an un-migrated database.
+fetch_ctl_for_fit <- function(conn, curve_ids) tryCatch(DBI::dbGetQuery(conn, sprintf(
+  "SELECT curve_id, well, sampleid, control_source, dilution, mfi, masked, mask_reason
+     FROM madi_results.control_for_fit WHERE curve_id IN (%s)", .in_ids(curve_ids))),
+  error = function(e) data.frame())
 
 
 # ── Per-antigen settings (standard_curve_concentration, blank_option) ─────────
@@ -467,6 +477,19 @@ fit_one_group <- function(gb, method, is_bayes, seed, job_id, per_fit) {
                                 is_log_independent = gb$study_params$is_log_independent)
     flat$standards <- pts$standards
     flat$blanks    <- pts$blanks
+    # Estimates for the standard points and the control wells (curveRcore >=
+    # 0.7.0). A failure here never loses the fit: it is saved without them and
+    # the backfill (backfill_point_estimates.R) can fill them later.
+    if (pe_available()) {
+      flat <- tryCatch(pe_attach(flat, gb$cg,
+                         is_log_response = gb$study_params$is_log_response,
+                         is_log_independent = gb$study_params$is_log_independent,
+                         include_measurement_error = gb$inc_me, job_id = job_id),
+                       error = function(e) {
+                         message("  point estimates skipped for ", gb$tag, ": ", conditionMessage(e))
+                         flat
+                       })
+    }
     save_calib(conn, flat)
     v <- verify_saved(mp, job_id = job_id, method = method, conn = conn,
                       points = pp, verbose = FALSE)
@@ -518,6 +541,7 @@ main <- function() {
   if (!nrow(std)) { message("No standard rows for this batch. Exiting."); return(0L) }
   blk <- fetch_blk_for_fit(conn, batch)
   smp <- fetch_smp_for_fit(conn, batch)
+  ctl <- fetch_ctl_for_fit(conn, batch)
 
   if (!("multiplate_group_id" %in% names(std)))
     stop("standard_for_fit is missing multiplate_group_id — cannot group. [CONFIRM view]")
@@ -557,11 +581,14 @@ main <- function() {
            else blk[0, , drop = FALSE]
     smg <- if (nrow(smp)) smp[as.character(smp$multiplate_group_id) == gid, , drop = FALSE]
            else smp[0, , drop = FALSE]
+    # controls of this group's curves (control_for_fit has no multiplate_group_id)
+    cg  <- if (nrow(ctl)) ctl[as.numeric(ctl$curve_id) %in% as.numeric(sg$curve_id), , drop = FALSE]
+           else NULL
     antigen <- as.character(sg$antigen[1]); feature <- as.character(sg$feature[1])
     n_grp   <- length(unique(sg$curve_id))
     rep_cid <- sg$curve_id[1]              # representative curve_id (settings are group-uniform)
     list(
-      gid = gid, sg = sg, bg = bg, smg = smg,
+      gid = gid, sg = sg, bg = bg, smg = smg, cg = cg,
       antigen = antigen, feature = feature, n_grp = n_grp,
       tag = sprintf("group=%s antigen=%s feature=%s n_curves=%d",
                     gid, antigen, feature, n_grp),
@@ -616,7 +643,7 @@ main <- function() {
   np <- pp_plan$n_parallel; per_fit <- pp_plan$per_fit
 
   # Free the big frames before forking: children hold only their bundle slice.
-  rm(std, blk, smp); invisible(gc(FALSE))
+  rm(std, blk, smp, ctl); invisible(gc(FALSE))
 
   message(sprintf("worker_curveR: method=%s n_curves=%d n_groups=%d job=%s (settings: cascade, CLI overrides)",
                   method, total_curves, length(gids), P$job_id))
