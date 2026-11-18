@@ -16,12 +16,33 @@ no-op.
 | 008 | `008_calib_samples_censoring.sql` | Censoring / predictive-interval columns; `decision_cutoff`, `n_interval_draws` settings | Required (curveR >= 0.5.0) |
 | 009 | `009_calib_draws_scope_key.sql` | `calib_draws` key gains `param_scope`; CHECKs | Required (curveRfreq >= 0.5.0) |
 | 010 | `010_calib_weights_model.sql` | `model` + additive-model columns on the weights tables | Required (curveRweights >= 0.3.0) |
+| 011 | `011_point_estimates_reference_manifest.sql` | `calib_controls`; estimate columns + `recovery_pct` on `calib_standards`; `control_reference` + `calib_controls_qc`; `calib_run.manifest`; `schema_version`; `control_for_fit` view | Required (curveRcore >= 0.7.0) |
 | — | `bayes_keying_migration.sql` | Re-keys `bayes_ensemble` / `bayes_pareto_k` | **Legacy** (old batch calculator) |
+
+## After 011: one-off backfill
+
+Curves fitted before 011 have no control rows and no standard estimates.
+`worker/backfill_point_estimates.R` fills them from the stored fits (nothing is
+refitted; fit rows are not changed), so readers need only stored values. Run it
+once, from a worker container or any machine with curveRcore >= 0.7.0 and the
+`DB_*` environment:
+
+```sh
+Rscript backfill_point_estimates.R --dry-run          # report what it would do
+Rscript backfill_point_estimates.R                    # all curves still missing values
+```
+
+It is resumable (a stopped run continues where it left off) and each batch is one
+transaction. `--curve_ids`, `--method`, `--batch` and `--limit` narrow a run. How
+close the backfilled values are to what the engine would have stored is in
+curveRcore's `calib_points_SPEC.md` ("Backfill"); `worker/tests/e2e_backfill_pg.sh`
+checks it against the real engines on a throwaway PostgreSQL.
 
 Prerequisites these files do **not** create: `curve_lookup` (with
 `multiplate_group_id`), the `xmap_*` tables, the `*_unmasked` and `*_for_fit`
 views, `calib_settings` / `calib_settings_meta` and the `resolve_settings*`
 functions. Some `calib_*` tables written by the worker (`calib_draws`,
 `calib_hyperparam`, `calib_fit_diag`, `calib_standards`, `calib_blanks`) are
-defined in curveRcore's `R/calib_schema.sql`. A complete, curated DDL for a fresh
+defined in curveRcore's `R/calib_schema.sql`. Migration 011 also needs
+`xmap_control` and `xmap_header`. A complete, curated DDL for a fresh
 install is planned for the i-spi-deployment repository.

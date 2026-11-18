@@ -1,11 +1,11 @@
 # =============================================================================
 # i-spi-compute — Kubernetes manifests (namespace: madi-preprod)
-# curveR (curveRcore v0.6.0, curveRfreq/curveRbayes v0.5.1, curveRweights v0.3.0;
+# curveR (curveRcore v0.7.0, curveRfreq/curveRbayes v0.5.1, curveRweights v0.3.0;
 # pins live in .github/workflows/build-worker.yml). Image :main is rebuilt by
 # CI; release images are tagged :X.Y.Z and :X.Y.Z-core<v>-freq<v>-bayes<v>-weights<v>.
 # Deploy = commit this file to dartmouth/k8s-madi (preprod-rcikube6/), then
-# delete the worker pod in Rancher. Needs DB migrations up to 010
-# (worker/migrations/; all applied to the shared preprod DB).
+# delete the worker pod in Rancher. Needs DB migrations up to 011
+# (worker/migrations/; 001-010 applied to the shared preprod DB; 011 NOT YET).
 # Resources unchanged: per-sample Monte Carlo intervals (freq, 1000 draws) and
 # the extra Bayesian draw matrix fit well within the 16 CPU / 16Gi limits.
 # i-spi-compute replaces the old batch calculator (immunoplex-batch-calculator:
@@ -26,7 +26,7 @@
 #          --from-literal=REDIS_AUTH="$(openssl rand -hex 32)"
 #      The DB password is NOT duplicated here — the worker references the
 #      existing secret madi-lumi-reader/db_pwd_x (same DB user d78039e).
-#   2. Apply db/calib_schema_v1.sql, then worker/migrations/003-010 in order,
+#   2. Apply db/calib_schema_v1.sql, then worker/migrations/003-011 in order,
 #      to the database once (out of band; see worker/migrations/README.md).
 #   3. Add a Traefik route for /i-spi-compute -> Service i-spi-compute-api:8000.
 #
