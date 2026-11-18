@@ -381,6 +381,7 @@ flatten_result <- function(mp, job_id, method = NULL) {
     version = NA_character_,
     best_model = if (inherits(mp,"calibration_result_multiplate")) mp$meta$best_model %||% NA else NA,
     params = .meta_json(mp), status = "completed",
+    manifest = .run_manifest(),
     stringsAsFactors = FALSE)
 
   list(run = run, fit = bind(fit_rows), param = bind(param_rows),
@@ -606,13 +607,27 @@ flatten_calib_points <- function(pp, job_id, method, response_var = "mfi",
     stringsAsFactors = FALSE)
 }
 
+# Release manifest of this job (calib_run.manifest, migration 011): the worker
+# image's version and commit, R, curveR packages, CmdStan, calib schema version.
+# NA with curveRcore < 0.7.0; .append() drops the column on an un-migrated DB.
+.run_manifest <- function() {
+  if (!"release_manifest" %in% getNamespaceExports("curveRcore")) return(NA_character_)
+  tryCatch(curveRcore::manifest_json(curveRcore::release_manifest(
+    component = "i-spi-compute-worker",
+    version   = Sys.getenv("ISPI_COMPUTE_VERSION", NA_character_),
+    commit    = Sys.getenv("ISPI_COMPUTE_COMMIT", NA_character_),
+    lockfile  = if (nzchar(Sys.getenv("RENV_LOCKFILE"))) Sys.getenv("RENV_LOCKFILE") else NULL)),
+    error = function(e) NA_character_)
+}
+
 .meta_json <- function(mp) {
   m <- tryCatch(if (inherits(mp,"calibration_result_multiplate")) mp$meta else mp$meta,
                 error = function(e) list())
   keep <- m[intersect(names(m),
     c("chains","warmup","sampling","adapt_delta","seed","pcov_threshold",
       "use_heteroscedastic_noise","n_draws_predict","n_draws_ensemble",
-      "decision_cutoff","n_interval_draws","interval_seed"))]
+      "decision_cutoff","n_interval_draws","interval_seed",
+      "is_log_response","is_log_independent","include_measurement_error"))]
   tryCatch(jsonlite::toJSON(keep, auto_unbox = TRUE, null = "null"),
            error = function(e) NA_character_)
 }
@@ -739,4 +754,18 @@ save_calib <- function(conn, flat, schema = "madi_results", verbose = TRUE) {
     DBI::dbQuoteLiteral(conn, run$best_model[1] %||% NA),
     DBI::dbQuoteLiteral(conn, run$params[1] %||% NA),
     DBI::dbQuoteLiteral(conn, run$status[1] %||% "completed")))
+  # Release manifest (migration 011). Written only where the column exists, so a
+  # worker on curveRcore >= 0.7.0 still runs against an un-migrated database.
+  man <- run$manifest[1] %||% NA_character_
+  if (!is.na(man) && nzchar(man)) {
+    has_col <- nrow(DBI::dbGetQuery(conn, sprintf(
+      "SELECT 1 FROM information_schema.columns
+        WHERE table_schema = %s AND table_name = 'calib_run' AND column_name = 'manifest'",
+      DBI::dbQuoteLiteral(conn, schema)))) > 0
+    if (has_col)
+      DBI::dbExecute(conn, sprintf(
+        "UPDATE %s.calib_run SET manifest = %s::jsonb WHERE job_id = %s", schema,
+        DBI::dbQuoteLiteral(conn, man), DBI::dbQuoteLiteral(conn, run$job_id[1])))
+  }
+  invisible(TRUE)
 }

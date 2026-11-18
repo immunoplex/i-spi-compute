@@ -302,7 +302,7 @@ but it caches; rebuilds that only change scripts are fast.
 
 **One-time migration (out of band, before first run):** apply
 `calib_schema_v1.sql`, then the numbered migrations in `worker/migrations/`
-(003-010, in order; see `worker/migrations/README.md`). It is
+(003-011, in order; see `worker/migrations/README.md`). It is
 **non-destructive** — it creates only the new `calib_*` tables and touches
 nothing in the legacy `bayes_*` tables.
 

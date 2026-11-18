@@ -73,9 +73,13 @@ env:
   # measurement-error model, opt-in -- the default model is unchanged. REQUIRES
   # migration 010 (worker/migrations/010_calib_weights_model.sql) on the DB before an
   # image with these pins runs --model additive; worker_weights.R refuses otherwise.
-  CURVERCORE_REF: v0.6.0
-  CURVERFREQ_REF: v0.5.1
-  CURVERBAYES_REF: v0.5.1
+  # curveRcore 0.7.0 adds calib_controls, the calib_standards estimate columns,
+  # control_reference, schema_version and calib_run.manifest: apply migration 011
+  # before rolling an image with this pin (the worker writes calib_run.manifest;
+  # .append() drops it on an un-migrated DB, so nothing breaks, it is just lost).
+  CURVERCORE_REF: v0.7.0
+  CURVERFREQ_REF: v0.5.2
+  CURVERBAYES_REF: v0.5.2
   CURVERWEIGHTS_REF: v0.3.0
   # CmdStan used to compile the Stan models. Pinned for reproducible builds; see
   # the CmdStan section of worker/worker.Dockerfile.
@@ -197,6 +201,8 @@ jobs:
             CURVERBAYES_REF=${{ steps.refs.outputs.curveRbayes }}
             CURVERWEIGHTS_REF=${{ steps.refs.outputs.curveRweights }}
             CMDSTAN_VERSION=${{ env.CMDSTAN_VERSION }}
+            WORKER_VERSION=${{ github.ref_name }}
+            WORKER_COMMIT=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

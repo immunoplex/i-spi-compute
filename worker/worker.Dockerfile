@@ -83,9 +83,9 @@ ENV CMDSTAN=/opt/cmdstan/current
 # cache-busts ONLY that layer (and the layers after it). force=TRUE additionally
 # guarantees the fitters are recompiled against the curveRcore just installed,
 # even when a DESCRIPTION Version string is unchanged.
-ARG CURVERCORE_REF=v0.6.0
-ARG CURVERFREQ_REF=v0.5.1
-ARG CURVERBAYES_REF=v0.5.1
+ARG CURVERCORE_REF=v0.7.0
+ARG CURVERFREQ_REF=v0.5.2
+ARG CURVERBAYES_REF=v0.5.2
 ARG CURVERWEIGHTS_REF=v0.3.0
 
 # Record the package versions in the image (CI also sets these as labels).
@@ -141,6 +141,13 @@ RUN R -e "need <- c(curveRcore = '0.5.0', curveRfreq = '0.5.0', curveRbayes = '0
             { cat('curveRbayes lacks decision_cutoff\n'); quit(status=1) }; \
           cat('curveR 0.5.0 contract OK\n')"
 
+# curveRcore 0.7.0: release manifest (written per job) and the backfill function.
+RUN R -e "if (packageVersion('curveRcore') < '0.7.0') { cat('curveRcore < 0.7.0\n'); quit(status=1) }; \
+          fns <- c('release_manifest','manifest_json','estimate_points_from_stored','validate_point_estimates'); \
+          miss <- fns[!fns %in% getNamespaceExports('curveRcore')]; \
+          if (length(miss)) { cat('curveRcore missing:', paste(miss, collapse=', '), '\n'); quit(status=1) }; \
+          cat('curveRcore 0.7.0 contract OK, calib schema', curveRcore::calib_schema_version(), '\n')"
+
 # ── Precompile curveRbayes Stan models into the image ────────────────────────
 # Bakes compiled model executables into a layer so containers start instantly
 # ("Model executable is up to date!") instead of compiling on the first job.
@@ -158,8 +165,18 @@ RUN R -e "for (m in c('logistic4','logistic5','loglogistic4','loglogistic5','gom
 WORKDIR /app
 COPY supervisor.py entrypoint.sh \
      worker_curveR.R worker_weights.R flatten_and_save.R verify_saved.R \
+     backfill_point_estimates.R \
      ./
 RUN chmod +x entrypoint.sh
+
+# The image's own release and commit, recorded in every job's manifest
+# (calib_run.manifest, migration 011). CI passes the tag (or branch) and SHA.
+ARG WORKER_VERSION=dev
+ARG WORKER_COMMIT=unknown
+ENV ISPI_COMPUTE_VERSION=${WORKER_VERSION} \
+    ISPI_COMPUTE_COMMIT=${WORKER_COMMIT}
+LABEL org.opencontainers.image.version="${WORKER_VERSION}" \
+      org.opencontainers.image.revision="${WORKER_COMMIT}"
 
 # ── Environment defaults ─────────────────────────────────────────────────────
 # Credentials come from K8s secrets / docker-compose env at runtime.
