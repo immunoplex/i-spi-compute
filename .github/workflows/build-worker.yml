@@ -57,7 +57,7 @@ env:
   # REQUIRES migrations 008 (calib_samples / calib_diagnostics columns +
   # decision_cutoff / n_interval_draws settings) and 009 (calib_draws key +
   # 'fixed' sample_kind) on the DB before workers roll -- verify_saved fails
-  # the job otherwise. Both applied to mlr-c3d7-db 2026-10-11.
+  # the job otherwise. Both applied to the shared database 2026-10-11.
   # The worker.Dockerfile contract check fails the image build if any of the
   # three is older than 0.5.0.
   # v0.5.1 (curveRcore, 2026-10-10) fixes analytic gradients for 5PL / Gompertz /

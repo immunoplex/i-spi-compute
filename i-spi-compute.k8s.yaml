@@ -1,55 +1,26 @@
 # =============================================================================
-# i-spi-compute — Kubernetes manifests (namespace: madi-preprod)
-# curveR (curveRcore v0.7.0, curveRfreq/curveRbayes v0.5.1, curveRweights v0.3.0;
-# pins live in .github/workflows/build-worker.yml). Image :main is rebuilt by
-# CI; release images are tagged :X.Y.Z and :X.Y.Z-core<v>-freq<v>-bayes<v>-weights<v>.
-# Deploy = commit this file to dartmouth/k8s-madi (preprod-rcikube6/), then
-# delete the worker pod in Rancher. Needs DB migrations up to 011
-# (worker/migrations/; 001-010 applied to the shared preprod DB; 011 NOT YET).
-# Resources unchanged: per-sample Monte Carlo intervals (freq, 1000 draws) and
-# the extra Bayesian draw matrix fit well within the 16 CPU / 16Gi limits.
-# i-spi-compute replaces the old batch calculator (immunoplex-batch-calculator:
-# immunoplex-batch-cal-api / -worker, redis-batch-cal, secret immunoplex-batch-cal,
-# route /batch-api), which is retired. The distinct names (i-spi-compute-*) and
-# OWN secret (i-spi-compute) let the two run side by side during the changeover
-# with no shared Redis queue; nothing here depends on the old stack.
+# i-spi-compute 1.1.0 -- compute tier (namespace: madi-preprod)
+#   api + worker + dedicated Redis; I-SPI posts jobs to /i-spi-compute.
+#   Worker image: curveRcore 0.7.0, curveRfreq 0.5.2, curveRbayes 0.5.2,
+#   curveRweights 0.3.0, CmdStan 2.40.0; database at calib schema 0.7.0
+#   (worker/migrations/ up to 011).
 #
-# Naming:
-#   curveR            = the science (R packages), deployed independently
-#   i-spi-compute     = this application tier (api + worker + redis)
-#   i-spi             = the Shiny front end this tier serves (unchanged here)
+# This is the TEMPLATE kept in the public repo. The deployed copy lives in the
+# cluster's private config repo and differs only in:
+#   - <DB_HOST>, <DB_USER>: the database host and user;
+#   - the SealedSecret `i-spi-compute` (API_KEY, REDIS_AUTH), which is defined
+#     in the deployed copy of THIS file only and reused by i-spi-compute-sim and
+#     I-SPI. Create and seal it as described in SECRETS.md.
+# The DB password comes from the existing secret madi-lumi-reader (key db_pwd_x).
 #
-# PREREQUISITES (do these first; see SECRETS.md):
-#   1. Create the new secret (fresh API_KEY + REDIS_AUTH):
-#        kubectl -n madi-preprod create secret generic i-spi-compute \
-#          --from-literal=API_KEY="$(openssl rand -hex 32)" \
-#          --from-literal=REDIS_AUTH="$(openssl rand -hex 32)"
-#      The DB password is NOT duplicated here — the worker references the
-#      existing secret madi-lumi-reader/db_pwd_x (same DB user d78039e).
-#   2. Apply db/calib_schema_v1.sql, then worker/migrations/003-011 in order,
-#      to the database once (out of band; see worker/migrations/README.md).
-#   3. Add a Traefik route for /i-spi-compute -> Service i-spi-compute-api:8000.
-#
-# Images are built by CI to ghcr.io/immunoplex/i-spi-compute-{api,worker}:main.
+# Also needed: a Traefik route /i-spi-compute -> Service i-spi-compute-api:8000
+# with a stripprefix middleware (DEPLOYMENT.md).
+# Images: ghcr.io/immunoplex/i-spi-compute-{api,worker}:<X.Y.Z>, built from
+# v* tags. Rollback: the previous X.Y.Z tag.
 # =============================================================================
 ---
-apiVersion: bitnami.com/v1alpha1
-kind: SealedSecret
-metadata:
-  annotations:
-    sealedsecrets.bitnami.com/cluster-wide: "true"
-  creationTimestamp: null
-  name: i-spi-compute
-spec:
-  encryptedData:
-    API_KEY: AgBiXc8JMSU9lQwPiAL53Eg8fNAvIVfjcoWXY3fQ76xnCqTtVkQ6jeFZyW7Jk9THyBVKaNx+4pVX8aWauLTHDfpUFB91TPyC6HKeqQyh2/Q4m1Hb6b+qDM3ECNNVHEO7zb8mAsaWMLobYlJf8MJUH3jJew7NFk48kmNE4JU1Vj72wxaHapiUNZCYEhnFFUucnnQJ/P1XKJ+J3xIwgtZfWQB6MeqHQWOQL9D2M7x7jVtDc+Wu1Cjs6UZu1BPdpIwE1b9bUpK0MX7yW2w+PwGqj0aaji3inmiEoVt/hL5crfe1kD1yfZQ0s8FDRp1PReu9LkpROWqfhQ2rlN0vqUEJPi0JywnebJiOyoSsPA55p6u76exqcsnuRoSU5mbuLwbNc7x77MYxtIu6EDLnZANhKmyCKEOADTIGTpwDXUH6uPWkfL5fBhHBhcqWu4l07czLBIuNXe2MuXU2VZlDhHsfenMfWfS/nz/4azYpAaCTq6YQFHfIb76npPzpK22nEIl/y9uHGyl57E1dKLRHnAv6rdAkSK4/cWNMQ2vF5m7YIAExy0EbGpNNtmYesHwvrhvc+Ri4S+j7u4C8IQymUhJd3vguS72my9ca4QXMMg8JJUbj3h5lA0Rk/6Tx+Fl1pRC0NMKMzfcOBeQl8OhUhqIyZc4EGNQ4DXgfhLaliDoxMX1T58dapt09C4XsThzJHRO0rRtWDuIPrpgcvZp/xAm8FHQhl+aU0zMdajdrx2bRk4MtUU2kn8zTpWFeI90/DJ69loZj03MZDa/qaH90NioMJYC7
-    REDIS_AUTH: AgAkpKiGt47QBxltylvTZrTq5DATBwis3HcGCLZ81hv/iMLTqx5+7LX8zfViz6B3w/PKqt/SBrLgP1rsrD7jhNlObj/XX10MZo2mEACZXyVOP+P8eXPldyNexAsv1rmEkwqk7429K1uZHLDRnzINLvKRpN5lWZDwV5oxMHPBmZxPMq0YUHpV6nRrJEqQLlRfV8711CVgZE/Se2dfn0HCIN5+i0hZc5cWEQ1UsNRBzixC80O61oJXbLP29+Flzh7A+puftuYMi45bHH9J0CslgtwElkxiaE6eLMcIm8P1jurD0tIVKdXUeNIzjCbpUcu3tnTQoRX1CIF/ft7Rbq5WmHyawHkjmpA0D9LXEFA5Sl7pXZrC7lJel7/O8BJbvO4a/r7pz/Ok+NEon4Ox0NJ/rBL7pHSHfj/tsorNkifn9nl7JRx6q+O9MQE2b4poV+tAUBARxQ7yNc3T/CWjq+49JcUDCSqd1btiVzMMM4eN650X4/t0jqJKoUi5yuIdDrZAWJxGEFBQhRbQ+0K2vR0HsRrh7abE97WENxcE3rf5eV6blodYjhxihFU0RsrTmoFhswONw7qPXxmvx3vilVQahSsqALrZWqIO4tZHCZqXPgSj+cMijxe9CkBQpIGh/XtpjLlfSCEO9RAW9xPaOql1uYkwihKY5zl8u6ctrBr2sy+WKaVYXH7wgSG00XZY+kJR/jBFUQBuU2ekaYSPoBqIxBGoPnSPoCvCW2OhfFZvgjhEeO15lgKyu3YoKU47aeUd2FozVGEXLY6Mk8nhNFv4ySYt
-  template:
-    metadata:
-      annotations:
-        sealedsecrets.bitnami.com/cluster-wide: "true"
-      creationTimestamp: null
-      name: i-spi-compute
+# SealedSecret `i-spi-compute` (API_KEY, REDIS_AUTH) goes here in the deployed
+# copy; see SECRETS.md. It is not kept in this public template.
 ---
 # ─────────────────────────────────────────────────────────────────────────────
 # Redis (dedicated queue for this stack)
@@ -114,7 +85,7 @@ spec:
       imagePullSecrets: [{ name: regcred }]
       containers:
         - name: i-spi-compute-api
-          image: ghcr.io/immunoplex/i-spi-compute-api:main
+          image: ghcr.io/immunoplex/i-spi-compute-api:1.1.0
           imagePullPolicy: Always
           env:
             - { name: REDIS_HOST, value: i-spi-compute-redis }   # <-- new dedicated Redis
@@ -167,7 +138,7 @@ spec:
         kubernetes.io/arch: amd64   # Stan models are precompiled for amd64
       containers:
         - name: i-spi-compute-worker
-          image: ghcr.io/immunoplex/i-spi-compute-worker:main
+          image: ghcr.io/immunoplex/i-spi-compute-worker:1.1.0
           imagePullPolicy: Always
           env:
             - { name: REDIS_HOST, value: i-spi-compute-redis }   # <-- new dedicated Redis
@@ -175,11 +146,11 @@ spec:
             - { name: REDIS_DB,   value: "0" }
             - name: REDIS_AUTH
               valueFrom: { secretKeyRef: { name: i-spi-compute, key: REDIS_AUTH } }
-            # --- database (same physical DB + credential as prod) ---
+            # --- database ---
             - { name: DB_NAME,    value: postgres }
-            - { name: DB_HOST,    value: mlr-c3d7-db.c.dartmouth.edu }
+            - { name: DB_HOST,    value: <DB_HOST> }
             - { name: DB_PORT,    value: "5432" }
-            - { name: DB_USER,    value: d78039e }
+            - { name: DB_USER,    value: <DB_USER> }
             - name: DB_PASSWORD
               valueFrom: { secretKeyRef: { name: madi-lumi-reader, key: db_pwd_x } }
             - { name: DB_SSLMODE, value: require }

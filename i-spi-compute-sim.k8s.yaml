@@ -1,31 +1,20 @@
 # =============================================================================
-# i-spi-compute-SIM — parallel clone for a big simulation run
-# namespace: madi-preprod
-# curveR (curveRcore v0.7.0, curveRfreq/curveRbayes v0.5.1, curveRweights v0.3.0;
-# pins live in .github/workflows/build-worker.yml). Image :main is rebuilt by
-# CI; release images are tagged :X.Y.Z and :X.Y.Z-core<v>-freq<v>-bayes<v>-weights<v>.
-# Deploy = commit this file to dartmouth/k8s-madi (preprod-rcikube6/), then
-# delete the worker pod in Rancher. Needs DB migrations up to 011
-# (worker/migrations/; 001-010 applied to the shared preprod DB; 011 NOT YET).
-# Resources unchanged: per-sample Monte Carlo intervals (freq, 1000 draws) and
-# the extra Bayesian draw matrix fit well within the 16 CPU / 16Gi limits.
-# This is a SECOND parallel stack, cloned from i-spi-compute, that must NOT
-# collide with the existing i-spi-compute stack (or with the retired batch
-# calculator's immunoplex-batch-cal-* names, if those are still on the cluster).
+# i-spi-compute-SIM 1.1.0 -- second compute tier (namespace: madi-preprod)
+#   api + worker + its own Redis; I-SPI sends jobs here for studies whose
+#   `compute_cluster` setting is "sim" (ISPI_COMPUTE_URL__SIM ->
+#   /i-spi-compute-sim). Same images as i-spi-compute; writes to the SAME
+#   database.
 #
-# What changed vs i-spi-compute:
-#   - Every resource name + every `app:` label/selector: i-spi-compute-*  ->  i-spi-compute-sim-*
-#   - Dedicated Redis (own Deployment+Service)         ->  own job queue, no cross-talk
-#   - REDIS_HOST on api + worker                        ->  points at i-spi-compute-sim-redis
-#   - ROOT_PATH + Ingress path                          ->  /i-spi-compute-sim
+# Differs from i-spi-compute.k8s.yaml only in: every name and `app:` label
+# (i-spi-compute-sim-*), its own Redis, REDIS_HOST, ROOT_PATH and the Ingress
+# path (/i-spi-compute-sim).
 #
-# What is DELIBERATELY UNCHANGED (per requirement "same named secrets" + "same resources"):
-#   - Secret refs: still `i-spi-compute` (API_KEY, REDIS_AUTH) and
-#     `madi-lumi-reader`/`db_pwd_x` (DB_PASSWORD). No new SealedSecret needed.
-#   - Container images, resource requests/limits, WORKER_CORES, nodeSelector.
-#
-# NOTE: the SealedSecret is intentionally OMITTED here — we reuse the existing
-# `i-spi-compute` secret already present in the cluster.
+# This is the TEMPLATE kept in the public repo; the deployed copy fills in
+# <DB_HOST> and <DB_USER>. The secret i-spi-compute (API_KEY, REDIS_AUTH) is
+# defined in the deployed i-spi-compute.k8s.yaml and only referenced here.
+# DB password: secret madi-lumi-reader (key db_pwd_x).
+# Images: ghcr.io/immunoplex/i-spi-compute-{api,worker}:<X.Y.Z>, built from
+# v* tags. Rollback: the previous X.Y.Z tag.
 # =============================================================================
 ---
 # ─────────────────────────────────────────────────────────────────────────────
@@ -91,7 +80,7 @@ spec:
       imagePullSecrets: [{ name: regcred }]
       containers:
         - name: i-spi-compute-sim-api
-          image: ghcr.io/immunoplex/i-spi-compute-api:main
+          image: ghcr.io/immunoplex/i-spi-compute-api:1.1.0
           imagePullPolicy: Always
           env:
             - { name: REDIS_HOST, value: i-spi-compute-sim-redis }   # <-- dedicated SIM Redis
@@ -144,7 +133,7 @@ spec:
         kubernetes.io/arch: amd64
       containers:
         - name: i-spi-compute-sim-worker
-          image: ghcr.io/immunoplex/i-spi-compute-worker:main
+          image: ghcr.io/immunoplex/i-spi-compute-worker:1.1.0
           imagePullPolicy: Always
           env:
             - { name: REDIS_HOST, value: i-spi-compute-sim-redis }   # <-- dedicated SIM Redis
@@ -154,9 +143,9 @@ spec:
               valueFrom: { secretKeyRef: { name: i-spi-compute, key: REDIS_AUTH } }
             # --- database (SAME physical DB + credential as prod — see caution) ---
             - { name: DB_NAME,    value: postgres }
-            - { name: DB_HOST,    value: mlr-c3d7-db.c.dartmouth.edu }
+            - { name: DB_HOST,    value: <DB_HOST> }
             - { name: DB_PORT,    value: "5432" }
-            - { name: DB_USER,    value: d78039e }
+            - { name: DB_USER,    value: <DB_USER> }
             - name: DB_PASSWORD
               valueFrom: { secretKeyRef: { name: madi-lumi-reader, key: db_pwd_x } }
             - { name: DB_SSLMODE, value: require }
@@ -167,10 +156,8 @@ spec:
             limits:   { cpu: "16", memory: 16Gi }   # keep == WORKER_CORES
 ---
 # ─────────────────────────────────────────────────────────────────────────────
-# Ingress (OPTIONAL — only if you submit jobs from outside the cluster).
-# Requires a Traefik stripprefix middleware named i-spi-compute-sim-stripprefix
-# to exist in the file provider (see step 4). If you'll submit jobs in-cluster
-# or via `kubectl port-forward`, you can delete this whole block.
+# Ingress -- REQUIRED: I-SPI reaches this stack at /i-spi-compute-sim.
+# Uses the Traefik file-provider middleware i-spi-compute-sim-stripprefix.
 # ─────────────────────────────────────────────────────────────────────────────
 apiVersion: networking.k8s.io/v1
 kind: Ingress
