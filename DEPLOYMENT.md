@@ -311,7 +311,7 @@ nothing in the legacy `bayes_*` tables.
 `curve_lookup.multiplate_group_id` column (a trigger-maintained hash used for
 grouping) must exist, since the worker reads the views and groups on that column.
 The underlying `*_unmasked` views and the `masked`/`mask_reason` columns on the
-base `xmap_*` / `curve_lookup` tables are **already deployed** on `mlr-c3d7-db`
+base `xmap_*` / `curve_lookup` tables are **already deployed** on the shared database
 (verified 2026-07-24); confirm the `*_for_fit` views and `multiplate_group_id`
 are deployed there too before the first run.
 
@@ -491,8 +491,8 @@ Redis `--requirepass`, the API, and the worker — or it protects nothing.
 | Placeholder | Example | Used by |
 | --- | --- | --- |
 | `<IMAGE_REGISTRY>` | `ghcr.io/immunoplex` | image refs |
-| `<API_IMAGE_TAG>` / `<WORKER_IMAGE_TAG>` | `:v0.3.0` | image refs |
-| `<DB_HOST>` / `<DB_PORT>` / `<DB_NAME>` | `mlr-c3d7-db…` / `5432` / `postgres` | worker |
+| `<API_IMAGE_TAG>` / `<WORKER_IMAGE_TAG>` | `:1.1.0` | image refs |
+| `<DB_HOST>` / `<DB_PORT>` / `<DB_NAME>` | (your database host) / `5432` / `postgres` | worker |
 | `<DB_USER>` / `<DB_PASSWORD>` | (secret) | worker |
 | `<DB_SSLMODE>` | `require` | worker |
 | `<REDIS_HOST>` / `<REDIS_PORT>` / `<REDIS_AUTH>` | `redis` / `6379` / (secret) | api + worker |

@@ -143,7 +143,7 @@ never commit the plaintext `Secret`.
 
 This stack gets its **own** secret named `i-spi-compute` (`API_KEY` +
 `REDIS_AUTH`). The DB password is **not** included — the worker reuses the
-existing `madi-lumi-reader/db_pwd_x` (same DB user `d78039e`).
+existing `madi-lumi-reader/db_pwd_x` (the same DB user as I-SPI).
 
 ### One-time: a shell with the tools
 
