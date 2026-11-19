@@ -17,7 +17,7 @@
 #
 # Requires migration 011 (checked: schema_version calib_schema >= 0.7.0) and
 # curveRcore >= 0.7.0. Resumable: a (curve, method) is done once its standards
-# have pcov and its controls exist, so a stopped run picks up where it left off.
+# have estimates and its controls exist, so a stopped run picks up where it left off.
 #
 # Usage (DB_* env as for the worker):
 #   Rscript backfill_point_estimates.R --dry-run              # compute, report, write nothing
@@ -80,8 +80,15 @@ bf_targets <- function(conn, curve_ids = NULL, method = NULL, limit = NULL) {
     "SELECT f.curve_id, f.method, f.model_name
        FROM madi_results.calib_fit f
       WHERE %s
-        AND (EXISTS (SELECT 1 FROM madi_results.calib_standards s
-                      WHERE s.curve_id = f.curve_id AND s.method = f.method AND s.pcov IS NULL)
+        AND ((EXISTS (SELECT 1 FROM madi_results.calib_standards s
+                       WHERE s.curve_id = f.curve_id AND s.method = f.method)
+              -- not yet estimated: no standard of the pair has any estimate.
+              -- (Testing pcov alone re-selected every curve with a point
+              -- beyond an asymptote, whose pcov stays NULL by design.)
+              AND NOT EXISTS (SELECT 1 FROM madi_results.calib_standards s
+                               WHERE s.curve_id = f.curve_id AND s.method = f.method
+                                 AND (s.pcov IS NOT NULL OR s.predicted_log10_concentration IS NOT NULL
+                                      OR s.censor_class IS NOT NULL)))
              OR (EXISTS (SELECT 1 FROM madi_results.control_for_fit c WHERE c.curve_id = f.curve_id)
                  AND NOT EXISTS (SELECT 1 FROM madi_results.calib_controls cc
                                   WHERE cc.curve_id = f.curve_id AND cc.method = f.method)))
