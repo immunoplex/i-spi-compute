@@ -1,5 +1,5 @@
 # =============================================================================
-# i-spi-compute 1.1.0 -- compute tier (namespace: madi-preprod)
+# i-spi-compute 1.1.1 -- compute tier (namespace: madi-preprod)
 #   api + worker + dedicated Redis; I-SPI posts jobs to /i-spi-compute.
 #   Worker image: curveRcore 0.7.0, curveRfreq 0.5.2, curveRbayes 0.5.2,
 #   curveRweights 0.3.0, CmdStan 2.40.0; database at calib schema 0.7.0
@@ -85,7 +85,7 @@ spec:
       imagePullSecrets: [{ name: regcred }]
       containers:
         - name: i-spi-compute-api
-          image: ghcr.io/immunoplex/i-spi-compute-api:1.1.0
+          image: ghcr.io/immunoplex/i-spi-compute-api:1.1.1
           imagePullPolicy: Always
           env:
             - { name: REDIS_HOST, value: i-spi-compute-redis }   # <-- new dedicated Redis
@@ -138,7 +138,7 @@ spec:
         kubernetes.io/arch: amd64   # Stan models are precompiled for amd64
       containers:
         - name: i-spi-compute-worker
-          image: ghcr.io/immunoplex/i-spi-compute-worker:1.1.0
+          image: ghcr.io/immunoplex/i-spi-compute-worker:1.1.1
           imagePullPolicy: Always
           env:
             - { name: REDIS_HOST, value: i-spi-compute-redis }   # <-- new dedicated Redis
