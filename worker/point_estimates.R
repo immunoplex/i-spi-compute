@@ -168,7 +168,9 @@ pe_L_from_flat <- function(flat, controls, is_log_response, is_log_independent,
   ids <- ids[is.finite(ids)]
   meta <- tryCatch(jsonlite::fromJSON(flat$run$params[1]), error = function(e) list())
   dr <- on_best(flat$draws)
-  if (nrow(dr)) dr <- dr[dr$param_scope == "curve" |
+  # NROW: a Bayesian fit saved without draws (persist_draws = FALSE, the
+  # default) has draws = NULL, and nrow(NULL) is NULL, not 0.
+  if (NROW(dr)) dr <- dr[dr$param_scope == "curve" |
                          dr$term %in% c("sigma_obs", "nu", "log_sigma0", "log_sigma_slope"), , drop = FALSE]
   list(
     best = best,

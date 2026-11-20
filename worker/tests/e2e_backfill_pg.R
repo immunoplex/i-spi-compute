@@ -257,6 +257,29 @@ if (!identical(Sys.getenv("E2E_SKIP_BAYES"), "1")) {
   compare_to_engine("B", "bayesian", 3L, map3, tol_x = 0.15, tol_pcov = 0.15)
   cat("\nW: worker path, bayesian\n")
   worker_vs_backfill("W", "bayesian", "job-WB", mpb, list(data = pp3$data, blanks = NULL), 3L)
+
+  # N: the production default persist_draws = FALSE -- the fit carries no draws.
+  # i-spi-compute 1.1.0 failed here (nrow(NULL) in pe_L_from_flat) and saved the
+  # fit without any standard or control estimates.
+  cat("\nN: worker path, bayesian fit without persisted draws\n")
+  pp4 <- prep(4)
+  add_curves(4L, "P4")
+  invisible(dbExecute(con, "UPDATE curve_lookup SET multiplate_group_id = 'cccccccc-0000-0000-0000-000000000003' WHERE curve_id = 4"))
+  mpn <- post(curveRbayes::fit_calibration_bayes(
+    standards = pp4$data, samples = ex$samples[ex$samples$curve_id == 4, ], response_var = "mfi",
+    model_names = "logistic4", std_curve_conc = 10000, chains = 2, warmup = 400, sampling = 500,
+    seed = 7, persist_draws = FALSE, include_measurement_error = TRUE, run_loo = FALSE, verbose = FALSE))
+  map4 <- add_controls(4, "P4")
+  fn <- tryCatch(store_fit_worker("bayesian", "job-N", mpn, list(data = pp4$data, blanks = NULL), 4L),
+                 error = function(e) { message("store_fit_worker failed: ", conditionMessage(e)); NULL })
+  check("N", is.list(fn) && (!is.data.frame(fn$draws) || !nrow(fn$draws)),
+        "the worker saved the fit, which carries no draws")
+  sn <- dbGetQuery(con, "SELECT pcov, censor_class FROM calib_standards WHERE curve_id = 4")
+  check("N", nrow(sn) > 0 && all(!is.na(sn$censor_class)),
+        sprintf("all %d standards stored with an estimate", nrow(sn)))
+  cn <- dbGetQuery(con, "SELECT job_id FROM calib_controls WHERE curve_id = 4")
+  check("N", nrow(cn) == nrow(map4) && all(cn$job_id == "job-N"),
+        sprintf("%d of %d controls stored by the worker", nrow(cn), nrow(map4)))
 }
 
 dbDisconnect(con)
