@@ -89,6 +89,9 @@ parse_args <- function(argv = commandArgs(trailingOnly = TRUE)) {
             job_id = "local", progress_dir = tempdir(),
             method = "", design = "", scale_predictor = "se",
             model = "multiplicative", fix_beta1 = "true",
+            # additive-model options (curveRweights >= 0.3.1); the defaults are
+            # what 1.1.1 did implicitly, so a job without them is unchanged
+            use_censoring = "true", patient_effect = "true", fix_kappa = "false",
             iter = "4000", warmup = "1000", chains = "4",
             adapt_delta = "0.95", seed = "")
   i <- 1L
@@ -303,7 +306,7 @@ build_fit_row <- function(pw, gb, design_cols, scale_predictor, job_id, method,
       stringsAsFactors = FALSE)))
   }
   ncens <- unlist(est$diagnostics$n_by_censoring)
-  cbind(base, data.frame(
+  out <- cbind(base, data.frame(
     beta1 = est$beta1, beta1_lo = est$beta1_CI[["lo"]], beta1_hi = est$beta1_CI[["hi"]],
     interpretation = est$interpretation,
     n_fit = as.integer(est$diagnostics$n_fit %||% NA_integer_),
@@ -318,6 +321,25 @@ build_fit_row <- function(pw, gb, design_cols, scale_predictor, job_id, method,
     n_censored = as.integer(sum(ncens[intersect(names(ncens), c("left", "right", "interval"))])),
     identifiability = est$interpretation,
     stringsAsFactors = FALSE))
+  if (.contract_has("fit", "fit_options") && !is.null(est$options))
+    out$fit_options <- .fit_options_json(est$options)
+  out
+}
+
+# TRUE if the installed curveRcore weights contract knows this column
+# (fit_options arrived in curveRcore 0.7.1; older images must not write it).
+.contract_has <- function(table, column) {
+  .have_contract() && column %in% curveRcore::weights_contract(table)$column
+}
+
+# The options the additive fit actually applied, as stored in
+# calib_weights_fit.fit_options. NULL entries (no patient / sample term) are
+# written as JSON null so every key is always present.
+.fit_options_json <- function(o) {
+  keys <- c("use_censoring", "patient_col", "plate_col", "fix_beta1", "fix_kappa")
+  out <- lapply(keys, function(k) if (is.null(o[[k]])) NA else o[[k]])
+  names(out) <- keys
+  as.character(jsonlite::toJSON(out, auto_unbox = TRUE, na = "null"))
 }
 
 # Refuse to write rows the contract does not allow (e.g. tau filled in a
@@ -350,7 +372,8 @@ build_fit_row <- function(pw, gb, design_cols, scale_predictor, job_id, method,
   }))
   if (length(miss)) {
     msg <- paste0("madi_results weights tables lack column(s) -- apply ",
-                  "worker/migrations/010_calib_weights_model.sql first: ",
+                  "worker/migrations/010_calib_weights_model.sql and ",
+                  "012_calib_weights_fit_options.sql first: ",
                   paste(miss, collapse = "; "))
     if (identical(model, "additive")) stop(msg)
     message("note: ", msg, " (multiplicative rows will be written without them)")
@@ -361,7 +384,7 @@ build_fit_row <- function(pw, gb, design_cols, scale_predictor, job_id, method,
 fit_one_weights_group <- function(gb, method, design_cols, scale_predictor,
                                   iter, warmup, chains, adapt_delta, seed,
                                   job_id, per_fit, model = "multiplicative",
-                                  fix_beta1 = TRUE) {
+                                  fix_beta1 = TRUE, add_opts = list()) {
   options(mc.cores = per_fit)
   # No DB read happens in this function (the batch was already fetched once,
   # in the parent, before forking) -- the connection is opened lazily, right
@@ -376,10 +399,14 @@ fit_one_weights_group <- function(gb, method, design_cols, scale_predictor,
 
     pw <- if (identical(model, "additive")) {
       # patientid/dilution/censor_* ride along from calib_samples via as_weight_data()
-      curveRweights::fit_precision_weights(
-        wd, model = "additive", plate_col = "curve_id", fix_beta1 = fix_beta1,
-        iter = iter, warmup = warmup, chains = chains, cores = per_fit,
-        adapt_delta = adapt_delta, seed = seed)
+      # add_opts: use_censoring / patient_col / fix_kappa, only
+      # those the job asked for (see .additive_opts()), so a job without them
+      # calls exactly what 1.1.1 called
+      do.call(curveRweights::fit_precision_weights, c(
+        list(wd, model = "additive", plate_col = "curve_id", fix_beta1 = fix_beta1,
+             iter = iter, warmup = warmup, chains = chains, cores = per_fit,
+             adapt_delta = adapt_delta, seed = seed),
+        add_opts))
     } else {
       curveRweights::fit_precision_weights(
         wd, scale_predictor = scale_predictor, plate_col = "curve_id",
@@ -403,6 +430,29 @@ fit_one_weights_group <- function(gb, method, design_cols, scale_predictor,
 }
 
 
+# Additive-model options from the job params. Only options that differ from
+# fit_precision_weights()'s own defaults are passed, so a job that sets none of
+# them makes exactly the 1.1.1 call. Options needing curveRweights >= 0.3.1
+# (patient term off, fix_kappa) stop the job on an older image instead of being
+# silently ignored. There is deliberately no sample-term option: a sample
+# random intercept absorbs the signal and drives tau to zero (curveRweights
+# 0.3.1 NEWS, "Known limitation").
+.additive_opts <- function(P) {
+  yes <- function(x) tolower(trimws(x %||% "")) %in% c("true", "t", "1", "yes")
+  no  <- function(x) tolower(trimws(x %||% "")) %in% c("false", "f", "0", "no")
+  o <- list()
+  if (no(P$use_censoring))  o$use_censoring <- FALSE
+  if (no(P$patient_effect)) o$patient_col   <- NA       # opt out of (1 | patientid)
+  if (yes(P$fix_kappa))     o$fix_kappa     <- TRUE
+  needs_031 <- intersect(names(o), c("fix_kappa", "patient_col"))
+  if (length(needs_031) &&
+      utils::packageVersion("curveRweights") < package_version("0.3.1"))
+    stop("option(s) ", paste(needs_031, collapse = ", "), " need curveRweights >= 0.3.1 ",
+         "in this image (installed: ", as.character(utils::packageVersion("curveRweights")), ").")
+  o
+}
+
+
 # ── MAIN ─────────────────────────────────────────────────────────────────────
 main <- function() {
   P <- parse_args()
@@ -418,6 +468,7 @@ main <- function() {
   scale_predictor <- match.arg(P$scale_predictor, c("se", "pcov"))
   model_kind <- match.arg(P$model, c("multiplicative", "additive"))
   fix_beta1  <- !tolower(P$fix_beta1) %in% c("false", "f", "0", "no")
+  add_opts   <- if (identical(model_kind, "additive")) .additive_opts(P) else list()
   iter        <- as.integer(P$iter)
   warmup      <- as.integer(P$warmup)
   chains      <- as.integer(P$chains)
@@ -492,7 +543,7 @@ main <- function() {
 
   run_one <- function(gb) fit_one_weights_group(
     gb, method, design_cols, scale_predictor, iter, warmup, chains,
-    adapt_delta, seed, P$job_id, per_fit, model_kind, fix_beta1)
+    adapt_delta, seed, P$job_id, per_fit, model_kind, fix_beta1, add_opts)
 
   if (np <= 1L) {
     for (gb in bundles) {

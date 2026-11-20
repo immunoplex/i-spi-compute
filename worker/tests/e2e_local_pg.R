@@ -102,13 +102,14 @@ n_samples <- nrow(samples); n_cens <- sum(samples$censor_type == "left")
 cat(sprintf("simulated %d samples (%d left-censored), 4 curves, 2 multiplate groups\n", n_samples, n_cens))
 
 # ---- run the worker ------------------------------------------------------------
-run_worker <- function(db, job_id, curve_ids = "1,2,3,4", model = NULL) {
+run_worker <- function(db, job_id, curve_ids = "1,2,3,4", model = NULL, extra = character()) {
   args <- c(shQuote(worker, type = "cmd"), "--job_id", job_id, "--progress_dir",
             shQuote(tempdir(), type = "cmd"),
             "--curve_ids", curve_ids, "--method", "frequentist",
             "--design", "timeperiod,agroup", "--iter", "600", "--warmup", "300",
             "--chains", "2", "--seed", "7")
   if (!is.null(model)) args <- c(args, "--model", model)
+  args <- c(args, extra)
   env <- c(DB_NAME = db, DB_HOST = "localhost", DB_PORT = port, DB_USER = "tester",
            DB_PASSWORD = "", DB_SSLMODE = "disable", WORKER_CORES = "2", WORKER_MAX_PARALLEL = "1",
            R_LIBS = Sys.getenv("R_LIBS"))
@@ -160,6 +161,12 @@ check("B", all(!is.na(w$bound[cs])) && all(is.na(w$bound[!cs])), "bound set exac
 check("B", nrow(f) == 2 && all(f$model == "additive"), "2 fit rows (replaced), model = additive")
 check("B", all(is.na(f$phi)) && all(!is.na(f$tau)) && all(!is.na(f$kappa)) && all(f$fix_beta1), "phi NULL; tau/kappa set; beta1 fixed")
 check("B", all(num(f$reliability) > 0 & num(f$reliability) <= 1) && all(f$n_censored > 0), "group reliability in (0,1]; n_censored > 0")
+if ("fit_options" %in% names(f)) {
+  fo <- lapply(f$fit_options, jsonlite::fromJSON)
+  check("B", all(vapply(fo, function(o) isTRUE(o$use_censoring) && identical(o$patient_col, "patientid") &&
+                          isFALSE(o$fix_kappa), logical(1))),
+        "fit_options records the defaults (censoring on, patient term, kappa estimated)")
+}
 
 # C: rollback
 cat("\nC: default job again (rollback to the multiplicative weights)\n")
@@ -179,6 +186,25 @@ check("D", d$status != 0, sprintf("exit status %s (non-zero => supervisor marks 
 check("D", any(grepl("Nothing to do", d$out)), "message explains why")
 check("D", nrow(q("e2e", "SELECT 1 FROM calib_weights")) == n_before, "nothing written")
 
+# F: additive options (curveRweights >= 0.3.1, migration 012)
+if (utils::packageVersion("curveRweights") >= "0.3.1") {
+  cat("
+F: --model additive with every option switched
+")
+  fx <- run_worker("e2e", "job-F", model = "additive",
+                   extra = c("--use_censoring", "false", "--patient_effect", "false",
+                             "--fix_kappa", "true"))
+  w <- q("e2e", "SELECT * FROM calib_weights"); f <- q("e2e", "SELECT * FROM calib_weights_fit")
+  check("F", fx$status == 0 && nrow(w) == n_samples, "exit 0; same row count")
+  check("F", all(num(f$kappa) == 1) && all(is.na(f$kappa_lo)), "kappa fixed at 1 (no interval)")
+  check("F", all(grepl("kappa fixed at 1", f$identifiability)), "identifiability says kappa was fixed")
+  check("F", all(f$n_censored == 0) && all(is.na(w$censor_type) | w$censor_type == "none"), "censoring off: nothing censored")
+  fo <- lapply(f$fit_options, jsonlite::fromJSON)
+  check("F", all(vapply(fo, function(o) isFALSE(o$use_censoring) && is.null(o$patient_col) &&
+                          isTRUE(o$fix_kappa), logical(1))),
+        "fit_options: censoring off, no patient term, kappa fixed")
+}
+
 # E: DB without the 0.6.0 columns
 cat("\nE: DB without the 0.6.0 columns (migration 010 not applied)\n")
 e1 <- run_worker("e2e_old", "job-E1")
@@ -194,7 +220,7 @@ cat(sprintf("\n%d checks, %d passed, %d FAILED\n", nrow(res), sum(res$ok), sum(!
 if (any(!res$ok)) {
   cat("\n--- worker output of failing scenarios (tail) ---\n")
   for (sc in unique(res$scenario[!res$ok])) {
-    o <- get(c(A = "a", B = "b", C = "cc", D = "d", E = "e2")[[sc]])$out
+    o <- get(c(A = "a", B = "b", C = "cc", D = "d", E = "e2", F = "fx")[[sc]])$out
     cat("scenario", sc, ":\n", paste(tail(o, 25), collapse = "\n"), "\n")
   }
   quit(status = 1)

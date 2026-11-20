@@ -22,7 +22,11 @@ Precision-weighting jobs (script_type "weights_bayesian" / "weights_frequentist"
     Optional: `model` ("multiplicative" (default; unchanged behaviour) |
     "additive" -- the measurement-error model of curveRweights >= 0.3.0, which
     needs migration 010 and curveRcore >= 0.6.0 in the worker image), `fix_beta1`
-    ("true" (default) | "false"; additive only), `scale_predictor` ("se" (default) |
+    ("true" (default) | "false"; additive only), the additive-only switches
+    `use_censoring` ("true" (default) | "false"), `patient_effect` ("true"
+    (default) | "false") and `fix_kappa` ("false" (default) | "true";
+    patient_effect=false and fix_kappa need curveRweights >= 0.3.1),
+    `scale_predictor` ("se" (default) |
     "pcov"; multiplicative only), and the MCMC knobs
     `iter`, `warmup`, `chains`, `adapt_delta`, `seed` (brms/Stan's own naming —
     NOT the same names as the bayesian calibration job's `sampling`/`warmup`).
@@ -191,12 +195,25 @@ class JobSubmission(BaseModel):
                     "params.model must be one of: " + ", ".join(WEIGHTS_MODELS)
                     + " (got %r)" % (self.params["model"],)
                 )
+        # Additive-model switches: "true"/"false" only, and only with the
+        # additive model, so a mistyped value or a switch sent with the
+        # multiplicative model (where the worker would ignore it) is refused.
+        if self.script_type.startswith("weights_"):
+            given = [k for k in WEIGHTS_ADDITIVE_SWITCHES if k in self.params]
+            for k in given + (["fix_beta1"] if "fix_beta1" in self.params else []):
+                if str(self.params[k]).strip().lower() not in ("true", "false"):
+                    raise ValueError(
+                        "params.%s must be 'true' or 'false' (got %r)" % (k, self.params[k]))
+            if given and str(self.params.get("model", "multiplicative")) != "additive":
+                raise ValueError(
+                    "params " + ", ".join(given) + " apply only to model 'additive'")
         # Merge the CV% shorthand into params unless the caller set it explicitly.
         if "cdan_cv" not in self.params:
             self.params["cdan_cv"] = self.cdan_cv_threshold
 
 
 WEIGHTS_MODELS = ("multiplicative", "additive")
+WEIGHTS_ADDITIVE_SWITCHES = ("use_censoring", "patient_effect", "fix_kappa")
 
 
 class JobStatus(BaseModel):

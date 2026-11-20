@@ -109,3 +109,44 @@ test_that("rows rejoin to calib_samples identity by obs_id regardless of row ord
   expect_equal(w$patientid[w$sampleid == "a"], "p1")
   expect_equal(w$agroup[w$sampleid == "d"], "B")
 })
+
+# ---- additive-model options (curveRweights >= 0.3.1, curveRcore >= 0.7.1) ----
+
+test_that("CLI: additive switches default to 1.1.1 behaviour and pass nothing", {
+  P <- parse_args(c("--method", "bayesian", "--model", "additive"))
+  expect_equal(P$use_censoring, "true"); expect_equal(P$patient_effect, "true")
+  expect_equal(P$fix_kappa, "false")
+  expect_identical(.additive_opts(P), list())
+})
+
+test_that("additive switches map to fit_precision_weights() arguments", {
+  testthat::skip_if(utils::packageVersion("curveRweights") < "0.3.1")
+  P <- parse_args(c("--method", "bayesian", "--model", "additive",
+                    "--use_censoring", "false", "--patient_effect", "false",
+                    "--fix_kappa", "true"))
+  o <- .additive_opts(P)
+  expect_identical(o$use_censoring, FALSE)
+  expect_true(is.na(o$patient_col))
+  expect_null(o$sample_col)                       # no sample-term option
+  expect_identical(o$fix_kappa, TRUE)
+})
+
+test_that("fit_options is written as JSON with every key, when the contract has it", {
+  testthat::skip_if_not(.contract_has("fit", "fit_options"), "curveRcore < 0.7.1")
+  pw <- fake_add()
+  pw$estimates$options <- list(use_censoring = TRUE, patient_col = "patientid",
+                               plate_col = "curve_id", fix_beta1 = TRUE, fix_kappa = FALSE)
+  fr <- build_fit_row(pw, gb, c("timeperiod", "agroup"), "se", "job-1", "bayesian", "additive")
+  expect_true("fit_options" %in% names(fr))
+  j <- jsonlite::fromJSON(fr$fit_options)
+  expect_setequal(names(j), c("use_censoring", "patient_col", "plate_col",
+                              "fix_beta1", "fix_kappa"))
+  expect_identical(j$patient_col, "patientid")
+  expect_silent(curveRcore::validate_weights_table(fr, "fit", "additive"))
+  # a multiplicative row never carries it
+  fm <- build_fit_row(fake_mult(), gb, "timeperiod", "se", "job-1", "bayesian", "multiplicative")
+  expect_false("fit_options" %in% names(fm))
+  # an additive result without $options (curveRweights 0.3.0) writes no column
+  fr0 <- build_fit_row(fake_add(), gb, "timeperiod", "se", "job-1", "bayesian", "additive")
+  expect_false("fit_options" %in% names(fr0))
+})
