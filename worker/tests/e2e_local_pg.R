@@ -141,6 +141,10 @@ check("A", all(w$model == "multiplicative"), "model = multiplicative on every ro
 check("A", all(is.na(w$reliability)) && all(is.na(w$v_meas)) && all(is.na(w$tau2)), "additive columns NULL")
 check("A", nrow(f) == 2 && all(!is.na(f$phi)) && all(is.na(f$tau)), "2 fit rows, phi set, tau NULL")
 check("A", all(!is.na(w$weights_pkg_version)), "weights_pkg_version recorded")
+if ("resid_sd_ratio" %in% names(f))
+  check("A", all(!is.na(f$rhat_max)) && all(!is.na(f$ess_min)) && all(!is.na(f$n_divergent)) &&
+          all(!is.na(f$ident_sd_ratio)) && all(!is.na(f$resid_sd)) && all(!is.na(f$resid_sd_ratio)),
+        "multiplicative fit rows carry the diagnostics (rhat, divergences, ESS, prior ratio, residual check)")
 w_mult <- w[order(w$curve_id, w$sampleid), ]
 
 # B: additive replaces the same keys
@@ -161,6 +165,10 @@ check("B", all(!is.na(w$bound[cs])) && all(is.na(w$bound[!cs])), "bound set exac
 check("B", nrow(f) == 2 && all(f$model == "additive"), "2 fit rows (replaced), model = additive")
 check("B", all(is.na(f$phi)) && all(!is.na(f$tau)) && all(!is.na(f$kappa)) && all(f$fix_beta1), "phi NULL; tau/kappa set; beta1 fixed")
 check("B", all(num(f$reliability) > 0 & num(f$reliability) <= 1) && all(f$n_censored > 0), "group reliability in (0,1]; n_censored > 0")
+if ("resid_sd_ratio" %in% names(f))
+  check("B", all(!is.na(f$rhat_max)) && all(!is.na(f$ess_min)) && all(!is.na(f$ident_sd_ratio)) &&
+          all(!is.na(f$resid_sd)) && all(!is.na(f$resid_sd_ratio)),
+        "additive fit rows carry the same diagnostics")
 if ("fit_options" %in% names(f)) {
   fo <- lapply(f$fit_options, jsonlite::fromJSON)
   check("B", all(vapply(fo, function(o) isTRUE(o$use_censoring) && identical(o$patient_col, "patientid") &&
@@ -198,6 +206,7 @@ F: --model additive with every option switched
   check("F", fx$status == 0 && nrow(w) == n_samples, "exit 0; same row count")
   check("F", all(num(f$kappa) == 1) && all(is.na(f$kappa_lo)), "kappa fixed at 1 (no interval)")
   check("F", all(grepl("kappa fixed at 1", f$identifiability)), "identifiability says kappa was fixed")
+  check("F", all(is.na(f$ident_sd_ratio)), "no prior ratio when kappa is fixed")
   check("F", all(f$n_censored == 0) && all(is.na(w$censor_type) | w$censor_type == "none"), "censoring off: nothing censored")
   fo <- lapply(f$fit_options, jsonlite::fromJSON)
   check("F", all(vapply(fo, function(o) isFALSE(o$use_censoring) && is.null(o$patient_col) &&

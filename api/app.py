@@ -30,6 +30,8 @@ Precision-weighting jobs (script_type "weights_bayesian" / "weights_frequentist"
     "pcov"; multiplicative only), and the MCMC knobs
     `iter`, `warmup`, `chains`, `adapt_delta`, `seed` (brms/Stan's own naming —
     NOT the same names as the bayesian calibration job's `sampling`/`warmup`).
+    `iter` (default 4000, whole number 1000-20000) includes the warm-up;
+    `warmup` defaults to max(1000, iter / 4), so the default stays 1000.
     Runs as a fully separate job/process from calibration — a weights-fit
     failure can never affect a calibration job's status or data. Writes to
     `calib_weights`/`calib_weights_fit`, not `calib_samples`.
@@ -207,6 +209,13 @@ class JobSubmission(BaseModel):
             if given and str(self.params.get("model", "multiplicative")) != "additive":
                 raise ValueError(
                     "params " + ", ".join(given) + " apply only to model 'additive'")
+        # MCMC length of a weights fit: whole numbers in range, warm-up below
+        # the total (the worker derives warm-up from iter when it is omitted).
+        if self.script_type.startswith("weights_"):
+            it = _whole(self.params, "iter", WEIGHTS_ITER_RANGE)
+            wu = _whole(self.params, "warmup", (100, WEIGHTS_ITER_RANGE[1]))
+            if wu is not None and wu >= (it if it is not None else WEIGHTS_ITER_DEFAULT):
+                raise ValueError("params.warmup must be below params.iter")
         # Merge the CV% shorthand into params unless the caller set it explicitly.
         if "cdan_cv" not in self.params:
             self.params["cdan_cv"] = self.cdan_cv_threshold
@@ -214,6 +223,22 @@ class JobSubmission(BaseModel):
 
 WEIGHTS_MODELS = ("multiplicative", "additive")
 WEIGHTS_ADDITIVE_SWITCHES = ("use_censoring", "patient_effect", "fix_kappa")
+WEIGHTS_ITER_RANGE = (1000, 20000)
+WEIGHTS_ITER_DEFAULT = 4000
+
+
+def _whole(params, key, rng):
+    """params[key] as an int within rng (inclusive), None when absent."""
+    if key not in params:
+        return None
+    try:
+        v = float(str(params[key]).strip())
+    except ValueError:
+        v = float("nan")
+    if not (v == v and v.is_integer() and rng[0] <= v <= rng[1]):
+        raise ValueError("params.%s must be a whole number from %d to %d (got %r)"
+                         % (key, rng[0], rng[1], params[key]))
+    return int(v)
 
 
 class JobStatus(BaseModel):

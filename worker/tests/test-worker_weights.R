@@ -131,6 +131,36 @@ test_that("additive switches map to fit_precision_weights() arguments", {
   expect_identical(o$fix_kappa, TRUE)
 })
 
+test_that("fit diagnostics are written for both models when the fit reports them", {
+  testthat::skip_if_not(.contract_has("fit", "resid_sd_ratio"), "curveRcore < 0.7.1")
+  dg <- list(rhat_max = 1.01, n_divergent = 3, ess_min = 850.4, ident_sd_ratio = 0.31,
+             resid_sd = 0.97, resid_sd_ratio = 1.4)
+  for (m in c("multiplicative", "additive")) {
+    pw <- if (m == "additive") fake_add() else fake_mult()
+    pw$estimates$diagnostics <- c(pw$estimates$diagnostics, dg)
+    fr <- build_fit_row(pw, gb, "timeperiod", "se", "job-1", "bayesian", m)
+    expect_true(all(FIT_DIAG_COLS %in% names(fr)), info = m)
+    expect_identical(fr$n_divergent, 3L)
+    expect_equal(fr$resid_sd_ratio, 1.4)
+    expect_silent(curveRcore::validate_weights_table(fr, "fit", m))
+  }
+  # a fixed parameter reports NA: stored as NULL, not an error
+  pw <- fake_add(); pw$estimates$diagnostics <- c(pw$estimates$diagnostics,
+                                                  replace(dg, "ident_sd_ratio", list(NA_real_)))
+  expect_true(is.na(build_fit_row(pw, gb, "timeperiod", "se", "j", "bayesian", "additive")$ident_sd_ratio))
+  # an older curveRweights (no diagnostics reported) writes the row as before
+  expect_false(any(FIT_DIAG_COLS %in% names(
+    build_fit_row(fake_mult(), gb, "timeperiod", "se", "j", "bayesian", "multiplicative"))))
+})
+
+test_that("CLI: iterations; warm-up follows them unless given", {
+  P <- parse_args(c("--method", "bayesian", "--design", "timeperiod"))
+  expect_equal(P$iter, "4000"); expect_equal(P$warmup, "")
+  expect_equal(.default_warmup(4000), 1000L)   # the 1.1.1 call
+  expect_equal(.default_warmup(2000), 1000L)
+  expect_equal(.default_warmup(8000), 2000L)
+})
+
 test_that("fit_options is written as JSON with every key, when the contract has it", {
   testthat::skip_if_not(.contract_has("fit", "fit_options"), "curveRcore < 0.7.1")
   pw <- fake_add()
