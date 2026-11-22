@@ -1,5 +1,5 @@
 # =============================================================================
-# i-spi-compute-SIM 1.1.1 -- second compute tier (namespace: madi-preprod)
+# i-spi-compute-SIM 1.2.0 -- second compute tier (namespace: madi-preprod)
 #   api + worker + its own Redis; I-SPI sends jobs here for studies whose
 #   `compute_cluster` setting is "sim" (ISPI_COMPUTE_URL__SIM ->
 #   /i-spi-compute-sim). Same images as i-spi-compute; writes to the SAME
@@ -80,7 +80,7 @@ spec:
       imagePullSecrets: [{ name: regcred }]
       containers:
         - name: i-spi-compute-sim-api
-          image: ghcr.io/immunoplex/i-spi-compute-api:1.1.1
+          image: ghcr.io/immunoplex/i-spi-compute-api:1.2.0
           imagePullPolicy: Always
           env:
             - { name: REDIS_HOST, value: i-spi-compute-sim-redis }   # <-- dedicated SIM Redis
@@ -133,7 +133,7 @@ spec:
         kubernetes.io/arch: amd64
       containers:
         - name: i-spi-compute-sim-worker
-          image: ghcr.io/immunoplex/i-spi-compute-worker:1.1.1
+          image: ghcr.io/immunoplex/i-spi-compute-worker:1.2.0
           imagePullPolicy: Always
           env:
             - { name: REDIS_HOST, value: i-spi-compute-sim-redis }   # <-- dedicated SIM Redis
