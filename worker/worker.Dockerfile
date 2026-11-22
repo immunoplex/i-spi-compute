@@ -83,10 +83,10 @@ ENV CMDSTAN=/opt/cmdstan/current
 # cache-busts ONLY that layer (and the layers after it). force=TRUE additionally
 # guarantees the fitters are recompiled against the curveRcore just installed,
 # even when a DESCRIPTION Version string is unchanged.
-ARG CURVERCORE_REF=v0.7.0
+ARG CURVERCORE_REF=v0.7.1
 ARG CURVERFREQ_REF=v0.5.2
 ARG CURVERBAYES_REF=v0.5.2
-ARG CURVERWEIGHTS_REF=v0.3.0
+ARG CURVERWEIGHTS_REF=v0.3.1
 
 # Record the package versions in the image (CI also sets these as labels).
 LABEL io.immunoplex.curvercore.ref="${CURVERCORE_REF}" \

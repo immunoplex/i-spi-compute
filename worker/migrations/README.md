@@ -17,6 +17,7 @@ no-op.
 | 009 | `009_calib_draws_scope_key.sql` | `calib_draws` key gains `param_scope`; CHECKs | Required (curveRfreq >= 0.5.0) |
 | 010 | `010_calib_weights_model.sql` | `model` + additive-model columns on the weights tables | Required (curveRweights >= 0.3.0) |
 | 011 | `011_point_estimates_reference_manifest.sql` | `calib_controls`; estimate columns + `recovery_pct` on `calib_standards`; `control_reference` + `calib_controls_qc`; `calib_run.manifest`; `schema_version`; `control_for_fit` view | Required (curveRcore >= 0.7.0) |
+| 012 | `012_calib_weights_fit_options.sql` | `calib_weights_fit.fit_options` (options of the additive weights fit) and six fit-diagnostic columns for both models (`rhat_max`, `n_divergent`, `ess_min`, `ident_sd_ratio`, `resid_sd`, `resid_sd_ratio`); records calib_schema 0.7.1 | Required (curveRcore >= 0.7.1) before additive weights jobs |
 | — | `bayes_keying_migration.sql` | Re-keys `bayes_ensemble` / `bayes_pareto_k` | **Legacy** (old batch calculator) |
 
 ## After 011: one-off backfill

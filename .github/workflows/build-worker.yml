@@ -77,10 +77,13 @@ env:
   # control_reference, schema_version and calib_run.manifest: apply migration 011
   # before rolling an image with this pin (the worker writes calib_run.manifest;
   # .append() drops it on an un-migrated DB, so nothing breaks, it is just lost).
-  CURVERCORE_REF: v0.7.0
+  # v0.7.1 (curveRcore) + v0.3.1 (curveRweights): additive weights options
+  # (use_censoring, patient_effect, sample_effect, fix_kappa) recorded in
+  # calib_weights_fit.fit_options. REQUIRES migration 012 before additive jobs.
+  CURVERCORE_REF: v0.7.1
   CURVERFREQ_REF: v0.5.2
   CURVERBAYES_REF: v0.5.2
-  CURVERWEIGHTS_REF: v0.3.0
+  CURVERWEIGHTS_REF: v0.3.1
   # CmdStan used to compile the Stan models. Pinned for reproducible builds; see
   # the CmdStan section of worker/worker.Dockerfile.
   CMDSTAN_VERSION: 2.40.0
