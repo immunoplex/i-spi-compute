@@ -142,8 +142,9 @@ sealed-secrets controller decrypts it into a real `Secret` at apply time. You
 never commit the plaintext `Secret`.
 
 This stack gets its **own** secret named `i-spi-compute` (`API_KEY` +
-`REDIS_AUTH`). The DB password is **not** included — the worker reuses the
-existing `madi-lumi-reader/db_pwd_x` (the same DB user as I-SPI).
+`REDIS_AUTH`). The DB login is **not** included — the worker uses the same
+login as I-SPI: `DB_USER` from the ConfigMap `app-config` (key `ISPI_DB_USER`)
+and `DB_PASSWORD` from the secret `madi` (key `DB_PASSWORD`).
 
 ### One-time: a shell with the tools
 
@@ -211,8 +212,8 @@ kubectl -n madi-preprod describe secret   i-spi-compute        # keys API_KEY, R
 ```
 
 The manifest references these keys exactly as before — `secretKeyRef` to
-`i-spi-compute` for `API_KEY`/`REDIS_AUTH`, and to the existing
-`madi-lumi-reader`/`db_pwd_x` for `DB_PASSWORD`:
+`i-spi-compute` for `API_KEY`/`REDIS_AUTH`, and to the shared `madi` secret
+for `DB_PASSWORD` (with `DB_USER` from the `app-config` ConfigMap):
 
 ```yaml
 # i-spi-compute-api
@@ -220,7 +221,8 @@ The manifest references these keys exactly as before — `secretKeyRef` to
 - { name: REDIS_AUTH, valueFrom: { secretKeyRef: { name: i-spi-compute, key: REDIS_AUTH } } }
 # i-spi-compute-worker
 - { name: REDIS_AUTH,  valueFrom: { secretKeyRef: { name: i-spi-compute,    key: REDIS_AUTH } } }
-- { name: DB_PASSWORD, valueFrom: { secretKeyRef: { name: madi-lumi-reader, key: db_pwd_x   } } }
+- { name: DB_USER,     valueFrom: { configMapKeyRef: { name: app-config, key: ISPI_DB_USER } } }
+- { name: DB_PASSWORD, valueFrom: { secretKeyRef: { name: madi,          key: DB_PASSWORD } } }
 ```
 
 ### Rotating a value

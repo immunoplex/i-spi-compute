@@ -10,9 +10,10 @@
 # path (/i-spi-compute-sim).
 #
 # This is the TEMPLATE kept in the public repo; the deployed copy fills in
-# <DB_HOST> and <DB_USER>. The secret i-spi-compute (API_KEY, REDIS_AUTH) is
+# <DB_HOST>. The secret i-spi-compute (API_KEY, REDIS_AUTH) is
 # defined in the deployed i-spi-compute.k8s.yaml and only referenced here.
-# DB password: secret madi-lumi-reader (key db_pwd_x).
+# DB login: ConfigMap app-config (key ISPI_DB_USER); password: secret madi
+# (key DB_PASSWORD), shared with I-SPI.
 # Images: ghcr.io/immunoplex/i-spi-compute-{api,worker}:<X.Y.Z>, built from
 # v* tags. Rollback: the previous X.Y.Z tag.
 # =============================================================================
@@ -145,9 +146,10 @@ spec:
             - { name: DB_NAME,    value: postgres }
             - { name: DB_HOST,    value: <DB_HOST> }
             - { name: DB_PORT,    value: "5432" }
-            - { name: DB_USER,    value: <DB_USER> }
+            - name: DB_USER
+              valueFrom: { configMapKeyRef: { name: app-config, key: ISPI_DB_USER } }
             - name: DB_PASSWORD
-              valueFrom: { secretKeyRef: { name: madi-lumi-reader, key: db_pwd_x } }
+              valueFrom: { secretKeyRef: { name: madi, key: DB_PASSWORD } }
             - { name: DB_SSLMODE, value: require }
             - { name: PROGRESS_DIR, value: /tmp }
             - { name: WORKER_CORES, value: "16" }   # MUST equal the CPU limit below
