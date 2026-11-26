@@ -7,11 +7,13 @@
 #
 # This is the TEMPLATE kept in the public repo. The deployed copy lives in the
 # cluster's private config repo and differs only in:
-#   - <DB_HOST>, <DB_USER>: the database host and user;
+#   - <DB_HOST>: the database host;
 #   - the SealedSecret `i-spi-compute` (API_KEY, REDIS_AUTH), which is defined
 #     in the deployed copy of THIS file only and reused by i-spi-compute-sim and
 #     I-SPI. Create and seal it as described in SECRETS.md.
-# The DB password comes from the existing secret madi-lumi-reader (key db_pwd_x).
+# The DB login comes from the shared ConfigMap app-config (key ISPI_DB_USER, a
+# restricted login: table read/write, no DDL) and its password from the shared
+# secret madi (key DB_PASSWORD); both are also used by I-SPI.
 #
 # Also needed: a Traefik route /i-spi-compute -> Service i-spi-compute-api:8000
 # with a stripprefix middleware (DEPLOYMENT.md).
@@ -150,9 +152,10 @@ spec:
             - { name: DB_NAME,    value: postgres }
             - { name: DB_HOST,    value: <DB_HOST> }
             - { name: DB_PORT,    value: "5432" }
-            - { name: DB_USER,    value: <DB_USER> }
+            - name: DB_USER
+              valueFrom: { configMapKeyRef: { name: app-config, key: ISPI_DB_USER } }
             - name: DB_PASSWORD
-              valueFrom: { secretKeyRef: { name: madi-lumi-reader, key: db_pwd_x } }
+              valueFrom: { secretKeyRef: { name: madi, key: DB_PASSWORD } }
             - { name: DB_SSLMODE, value: require }
             - { name: PROGRESS_DIR, value: /tmp }
             # --- CPU cap: MUST equal the CPU limit below (detectCores is not

@@ -574,7 +574,8 @@ for `i-spi-compute-worker`. The load-bearing details encoded there:
 - **Isolation:** dedicated `i-spi-compute-redis` Service + its own `i-spi-compute`
   secret, so the new stack never shares the production `redis-batch-cal` queue.
 - **Secrets split:** `API_KEY`/`REDIS_AUTH` from the new `i-spi-compute` secret;
-  `DB_PASSWORD` reused from the existing `madi-lumi-reader/db_pwd_x` (same DB user).
+  `DB_USER` from the shared ConfigMap `app-config` (`ISPI_DB_USER`) and
+  `DB_PASSWORD` from the shared secret `madi` (`DB_PASSWORD`), the same login as I-SPI.
 - **CPU cap:** `WORKER_CORES` set equal to the worker's CPU limit.
 - **Arch pin:** worker `nodeSelector: kubernetes.io/arch: amd64` (Stan models are
   precompiled for amd64).

@@ -285,8 +285,8 @@ Deploys to Kubernetes (namespace `madi-preprod`) as a **parallel** stack that
 does not collide with the existing production batch calculator.
 
 - **`i-spi-compute.k8s.yaml`** — Deployments + Services for redis/api, Deployment
-  for worker, tailored to the cluster (own `i-spi-compute` secret, reused
-  `madi-lumi-reader/db_pwd_x`, `/i-spi-compute` route, amd64 nodeSelector,
+  for worker, tailored to the cluster (own `i-spi-compute` secret, DB login from the shared
+  `app-config` / `madi`, `/i-spi-compute` route, amd64 nodeSelector,
   `WORKER_CORES` ↔ CPU-limit coupling).
 - **`DEPLOYMENT.md`** — the full deployment & configuration reference (env-var
   tables, runbook, manifest templates).
