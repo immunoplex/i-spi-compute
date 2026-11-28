@@ -216,11 +216,19 @@ class JobSubmission(BaseModel):
             wu = _whole(self.params, "warmup", (100, WEIGHTS_ITER_RANGE[1]))
             if wu is not None and wu >= (it if it is not None else WEIGHTS_ITER_DEFAULT):
                 raise ValueError("params.warmup must be below params.iter")
+        # Calibration noise model (curveRbayes/curveRfreq >= 0.6.0). The worker
+        # would treat an unknown value as 'constant'; refuse it here instead.
+        if not self.script_type.startswith("weights_") and "noise_model" in self.params:
+            if str(self.params["noise_model"]).strip().lower() not in NOISE_MODELS:
+                raise ValueError(
+                    "params.noise_model must be one of: " + ", ".join(NOISE_MODELS)
+                    + " (got %r)" % (self.params["noise_model"],))
         # Merge the CV% shorthand into params unless the caller set it explicitly.
         if "cdan_cv" not in self.params:
             self.params["cdan_cv"] = self.cdan_cv_threshold
 
 
+NOISE_MODELS = ("constant", "add_prop")
 WEIGHTS_MODELS = ("multiplicative", "additive")
 WEIGHTS_ADDITIVE_SWITCHES = ("use_censoring", "patient_effect", "fix_kappa")
 WEIGHTS_ITER_RANGE = (1000, 20000)

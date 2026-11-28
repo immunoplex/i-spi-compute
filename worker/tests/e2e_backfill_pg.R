@@ -81,6 +81,9 @@ check("M", identical(dbGetQuery(con, "SELECT version FROM schema_version WHERE c
 cols <- dbGetQuery(con, "SELECT column_name FROM information_schema.columns
                           WHERE table_schema='madi_results' AND table_name='calib_controls' ORDER BY ordinal_position")$column_name
 check("M", identical(cols, curveRcore::point_estimates_contract("controls")$column), "calib_controls matches the contract")
+# The backfill requires the installed curveRcore's calib schema (0.7.1 needs 012).
+mig012 <- file.path(here, "..", "migrations", "012_calib_weights_fit_options.sql")
+check("M", run_sql(mig012) == 0, "migration 012 applies (calib schema of curveRcore >= 0.7.1)")
 
 # ---- stored fits made by the real engines -------------------------------------
 data("bead_assay_example", package = "curveRcore")
@@ -197,7 +200,8 @@ map1 <- add_controls(1, "P1")
 man <- dbGetQuery(con, "SELECT manifest ->> 'calib_schema' AS cs, manifest ->> 'component' AS comp,
                                 manifest -> 'packages' ->> 'curveRcore' AS core
                            FROM calib_run WHERE job_id = 'job-F'")
-check("F", nrow(man) == 1 && identical(man$cs, "0.7.0") && identical(man$comp, "i-spi-compute-worker") &&
+check("F", nrow(man) == 1 && identical(man$cs, curveRcore::calib_schema_version()) &&
+           identical(man$comp, "i-spi-compute-worker") &&
            identical(man$core, as.character(utils::packageVersion("curveRcore"))),
       "the worker's save path records calib_run.manifest (component, curveRcore, calib schema)")
 check("F", all(is.na(dbGetQuery(con, "SELECT pcov FROM calib_standards")$pcov)), "stored standards start without estimates (legacy state)")

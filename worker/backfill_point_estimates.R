@@ -116,7 +116,7 @@ bf_load <- function(conn, curve_ids) {
                        FROM madi_results.calib_draws x ", best_join, "
                       WHERE x.curve_id IN (%s)
                         AND (x.param_scope = 'curve'
-                             OR x.term IN ('sigma_obs','nu','log_sigma0','log_sigma_slope'))"))
+                             OR x.term IN ('sigma_obs','nu','sigma_add','cv'))"))
   if (nrow(draws)) draws$draws <- bf_parse_array(draws$draws)
   list(
     params = q(paste0("SELECT x.curve_id, x.method, x.term, x.estimate
@@ -125,11 +125,20 @@ bf_load <- function(conn, curve_ids) {
                 FROM madi_results.calib_grid WHERE curve_id IN (%s)"),
     diag = q("SELECT * FROM madi_results.calib_diagnostics WHERE curve_id IN (%s)"),
     draws = draws,
+    # noise model and response adjustment as recorded in the run's params
+    # (curveR >= 0.6.0); NULL for older runs = constant noise, no adjustment.
     noise_model = q("SELECT f.curve_id, f.method,
-                            r.params ->> 'use_heteroscedastic_noise' AS use_hetero
+                            r.params::jsonb ->> 'noise_model' AS noise_model
                        FROM madi_results.calib_fit f
                        LEFT JOIN madi_results.calib_run r ON r.job_id = f.job_id
                       WHERE f.is_best AND f.curve_id IN (%s)"),
+    adjustment = q("SELECT f.curve_id, f.method,
+                           (r.params::jsonb -> 'response_adjustment' ->> 'blank_value')::float8    AS blank_value,
+                           (r.params::jsonb -> 'response_adjustment' ->> 'offset')::float8         AS offset,
+                           (r.params::jsonb -> 'response_adjustment' ->> 'response_floor')::float8 AS response_floor
+                      FROM madi_results.calib_fit f
+                      LEFT JOIN madi_results.calib_run r ON r.job_id = f.job_id
+                     WHERE f.is_best AND f.curve_id IN (%s)"),
     x_scale = q("SELECT curve_id, method,
                         bool_and(abs(predicted_concentration - predicted_log10_concentration) < 1e-9) AS log_x
                    FROM madi_results.calib_samples
