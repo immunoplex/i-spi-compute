@@ -493,6 +493,16 @@ fit_one_group <- function(gb, method, is_bayes, seed, job_id, per_fit) {
         noise_model = gb$noise_model, response_adjustment = adj,
         run_loo = TRUE, verbose = FALSE)
     } else {
+      # Floor for the pooled sigma_add (add_prop only): half the pooled
+      # within-plate SD of the group's RAW included blanks (curveRfreq >=
+      # 0.6.0). It acts only when the standards alone would put sigma_add
+      # below it; the blanks stay out of the fit. NULL = no floor.
+      sa_floor <- NULL
+      if (identical(gb$noise_model, "add_prop") && nrow(bg) &&
+          "blank_noise_floor" %in% getNamespaceExports("curveRfreq")) {
+        f <- curveRfreq::blank_noise_floor(bg, "mfi", k = 0.5)$floor
+        if (is.finite(f)) sa_floor <- f
+      }
       mp <- curveRfreq::fit_calibration_freq_multiplate(
         standards = std_fit, blanks = blk_fit, samples = smp_in,
         response_var = "mfi", model_names = gb$models,
@@ -503,6 +513,7 @@ fit_one_group <- function(gb, method, is_bayes, seed, job_id, per_fit) {
         decision_cutoff = gb$decision_cutoff,
         n_interval_draws = gb$n_interval_draws,
         noise_model = gb$noise_model, response_adjustment = adj,
+        sigma_add_floor = sa_floor,
         interval_seed = seed)
     }
 

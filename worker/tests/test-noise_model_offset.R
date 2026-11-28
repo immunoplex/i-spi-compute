@@ -165,3 +165,18 @@ test_that("bayesian add_prop: noise terms persisted, controls estimated with add
   pc <- ct[ct$sampleid == "PC", ]
   expect_true(all(is.finite(pc$predicted_log10_concentration)))
 })
+
+test_that("frequentist add_prop: the blank floor is computed from raw blanks and recorded", {
+  d <- sim_group()
+  # noisy blanks (+-0.2 per plate) give a floor far above the
+  # standards' own sigma_add (~0.008), so it must be applied
+  d$bg$mfi <- rep(c(-0.2, 0.2), length.out = nrow(d$bg))
+  flat <- run_group(bundle(d, "add_prop"))
+  np <- meta_of(flat)$noise_params
+  sdw <- curveRfreq::blank_noise_floor(d$bg, "mfi")$blank_sd
+  expect_equal(np$sigma_add_floor, 0.5 * sdw)
+  expect_true(np$floor_applied)
+  expect_equal(np$sigma_add, np$sigma_add_floor)
+  # constant noise: no floor involved
+  expect_null(meta_of(run_group(bundle(sim_group(), "constant")))$noise_params)
+})
