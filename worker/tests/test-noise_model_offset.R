@@ -166,17 +166,23 @@ test_that("bayesian add_prop: noise terms persisted, controls estimated with add
   expect_true(all(is.finite(pc$predicted_log10_concentration)))
 })
 
-test_that("frequentist add_prop: the blank floor is computed from raw blanks and recorded", {
-  d <- sim_group()
-  # noisy blanks (+-0.2 per plate) give a floor far above the
-  # standards' own sigma_add (~0.008), so it must be applied
-  d$bg$mfi <- rep(c(-0.2, 0.2), length.out = nrow(d$bg))
+test_that("frequentist add_prop: the blank floor uses raw blanks below the lowest standard", {
+  d <- sim_group(n_plates = 6)
+  # blanks 0.04 apart within each plate (robust SD ~0.042 -> floor ~0.021, above
+  # the standards' own sigma_add ~0.008), so the floor must be applied ...
+  d$bg$mfi <- rep(c(-0.02, 0.02), length.out = nrow(d$bg))
+  # ... and one blank that carries signal (1.5 OD, above every standard's low
+  # end) must be left out rather than inflate it (ELISA project 118)
+  d$bg$mfi[1] <- 1.5
   flat <- run_group(bundle(d, "add_prop"))
   np <- meta_of(flat)$noise_params
-  sdw <- curveRfreq::blank_noise_floor(d$bg, "mfi")$blank_sd
-  expect_equal(np$sigma_add_floor, 0.5 * sdw)
+  ref <- curveRfreq::blank_noise_floor(d$bg, "mfi", standards = d$sg)
+  expect_equal(ref$n_excluded, 1L)
+  expect_equal(np$sigma_add_floor, ref$floor)
+  expect_equal(np$sigma_add_floor, 0.5 * 0.04 / (sqrt(2) * qnorm(0.75)), tolerance = 1e-8)
   expect_true(np$floor_applied)
   expect_equal(np$sigma_add, np$sigma_add_floor)
+  expect_true(is.numeric(np$n_trimmed))
   # constant noise: no floor involved
   expect_null(meta_of(run_group(bundle(sim_group(), "constant")))$noise_params)
 })
