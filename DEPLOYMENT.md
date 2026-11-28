@@ -302,7 +302,7 @@ but it caches; rebuilds that only change scripts are fast.
 
 **One-time migration (out of band, before first run):** apply
 `calib_schema_v1.sql`, then the numbered migrations in `worker/migrations/`
-(003-012, in order; see `worker/migrations/README.md`). It is
+(003-013, in order; see `worker/migrations/README.md`). It is
 **non-destructive** — it creates only the new `calib_*` tables and touches
 nothing in the legacy `bayes_*` tables.
 
@@ -491,7 +491,7 @@ Redis `--requirepass`, the API, and the worker — or it protects nothing.
 | Placeholder | Example | Used by |
 | --- | --- | --- |
 | `<IMAGE_REGISTRY>` | `ghcr.io/immunoplex` | image refs |
-| `<API_IMAGE_TAG>` / `<WORKER_IMAGE_TAG>` | `:1.2.0` | image refs |
+| `<API_IMAGE_TAG>` / `<WORKER_IMAGE_TAG>` | `:1.3.0` | image refs |
 | `<DB_HOST>` / `<DB_PORT>` / `<DB_NAME>` | (your database host) / `5432` / `postgres` | worker |
 | `<DB_USER>` / `<DB_PASSWORD>` | (secret) | worker |
 | `<DB_SSLMODE>` | `require` | worker |
