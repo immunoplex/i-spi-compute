@@ -61,9 +61,9 @@ services:
         # Override per-run without editing this file, e.g.:
         #   CURVERBAYES_REF=main docker compose up --build
         # or set these in your .env file.
-        CURVERCORE_REF: ${CURVERCORE_REF:-v0.7.1}
-        CURVERFREQ_REF: ${CURVERFREQ_REF:-v0.5.2}
-        CURVERBAYES_REF: ${CURVERBAYES_REF:-v0.5.2}
+        CURVERCORE_REF: ${CURVERCORE_REF:-v0.8.0}
+        CURVERFREQ_REF: ${CURVERFREQ_REF:-v0.6.0}
+        CURVERBAYES_REF: ${CURVERBAYES_REF:-v0.6.0}
         CURVERWEIGHTS_REF: ${CURVERWEIGHTS_REF:-v0.3.1}
         CMDSTAN_VERSION: ${CMDSTAN_VERSION:-2.40.0}
     environment:

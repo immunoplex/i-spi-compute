@@ -80,9 +80,14 @@ env:
   # v0.7.1 (curveRcore) + v0.3.1 (curveRweights): additive weights options
   # (use_censoring, patient_effect, sample_effect, fix_kappa) recorded in
   # calib_weights_fit.fit_options. REQUIRES migration 012 before additive jobs.
-  CURVERCORE_REF: v0.7.1
-  CURVERFREQ_REF: v0.5.2
-  CURVERBAYES_REF: v0.5.2
+  # v0.8.0 (curveRcore) + v0.6.0 (curveRfreq, curveRbayes): one response
+  # adjustment per fit group (offset for values <= 0), opt-in noise_model
+  # add_prop with a blank floor for sigma_add (frequentist), blanks out of the
+  # Bayesian likelihood. Apply migration 013 when rolling an image with these
+  # pins, before I-SPI offers the noise_model setting.
+  CURVERCORE_REF: v0.8.0
+  CURVERFREQ_REF: v0.6.0
+  CURVERBAYES_REF: v0.6.0
   CURVERWEIGHTS_REF: v0.3.1
   # CmdStan used to compile the Stan models. Pinned for reproducible builds; see
   # the CmdStan section of worker/worker.Dockerfile.
