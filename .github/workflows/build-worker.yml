@@ -86,7 +86,9 @@ env:
   # Bayesian likelihood. Apply migration 013 when rolling an image with these
   # pins, before I-SPI offers the noise_model setting.
   CURVERCORE_REF: v0.8.0
-  CURVERFREQ_REF: v0.6.0
+  # v0.6.1: robust blank floor (contaminated blanks left out) and outlier-
+  # resistant pooled noise terms (frequentist add_prop).
+  CURVERFREQ_REF: v0.6.1
   CURVERBAYES_REF: v0.6.0
   CURVERWEIGHTS_REF: v0.3.1
   # CmdStan used to compile the Stan models. Pinned for reproducible builds; see

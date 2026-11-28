@@ -84,7 +84,7 @@ ENV CMDSTAN=/opt/cmdstan/current
 # guarantees the fitters are recompiled against the curveRcore just installed,
 # even when a DESCRIPTION Version string is unchanged.
 ARG CURVERCORE_REF=v0.8.0
-ARG CURVERFREQ_REF=v0.6.0
+ARG CURVERFREQ_REF=v0.6.1
 ARG CURVERBAYES_REF=v0.6.0
 ARG CURVERWEIGHTS_REF=v0.3.1
 
