@@ -491,7 +491,7 @@ Redis `--requirepass`, the API, and the worker — or it protects nothing.
 | Placeholder | Example | Used by |
 | --- | --- | --- |
 | `<IMAGE_REGISTRY>` | `ghcr.io/immunoplex` | image refs |
-| `<API_IMAGE_TAG>` / `<WORKER_IMAGE_TAG>` | `:1.3.1` | image refs |
+| `<API_IMAGE_TAG>` / `<WORKER_IMAGE_TAG>` | `:1.3.2` | image refs |
 | `<DB_HOST>` / `<DB_PORT>` / `<DB_NAME>` | (your database host) / `5432` / `postgres` | worker |
 | `<DB_USER>` / `<DB_PASSWORD>` | (secret) | worker |
 | `<DB_SSLMODE>` | `require` | worker |
