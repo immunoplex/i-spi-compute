@@ -627,8 +627,15 @@ flatten_calib_points <- function(pp, job_id, method, response_var = "mfi",
     c("chains","warmup","sampling","adapt_delta","seed","pcov_threshold",
       "use_heteroscedastic_noise","n_draws_predict","n_draws_ensemble",
       "decision_cutoff","n_interval_draws","interval_seed",
-      "is_log_response","is_log_independent","include_measurement_error"))]
-  tryCatch(jsonlite::toJSON(keep, auto_unbox = TRUE, null = "null"),
+      "is_log_response","is_log_independent","include_measurement_error",
+      # curveRbayes/curveRfreq >= 0.6.0: noise model, its pooled frequentist
+      # terms, and the response adjustment (blank_value, offset, floor) the
+      # standards, samples and controls were put on. The backfill reads the
+      # adjustment back to transform controls as the fit did.
+      "noise_model","noise_params","response_offset","response_adjustment"))]
+  # digits = NA: full precision. toJSON's default (4 decimals) would round the
+  # offset and floor the backfill re-applies to controls.
+  tryCatch(jsonlite::toJSON(keep, auto_unbox = TRUE, null = "null", digits = NA),
            error = function(e) NA_character_)
 }
 

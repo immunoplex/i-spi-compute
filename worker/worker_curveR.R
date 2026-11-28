@@ -13,9 +13,12 @@
 # Pipeline per multiplate group (all curves that differ only by plate):
 #   1. subset the batch's standard/blank/sample rows to this multiplate_group_id
 #   2. set the row-level `included` flag from `masked`
-#   3. preprocess_standards() → concentration column
+#   3. group_response_adjustment() (one blank value and one offset for values
+#      <= 0, decided by standards/controls/samples, never blanks), then
+#      preprocess_standards() → concentration column
 #   4. dispatch: curveRbayes::fit_calibration_bayes()   (hierarchical, pooled)
 #             or curveRfreq::fit_calibration_freq_multiplate()  (independent)
+#      both with the group's noise_model and response adjustment
 #   5. compute_detection_limits_multiplate()
 #   6. flatten_result() + flatten_calib_points()
 #   7. pe_attach(): back-calculated estimates for the standard points and the
@@ -277,6 +280,40 @@ make_pick <- function(P) {
   if (length(x) != 1L || is.na(x) || !(x %in% .BLANK_OPTS)) "ignored" else x
 }
 
+# ── noise-model vocabulary ───────────────────────────────────────────────────
+# Unrecognised or empty collapses to "constant" (the pre-0.6.0 behaviour), so a
+# typo can never silently change the likelihood.
+.NOISE_MODELS <- c("constant", "add_prop")
+.valid_noise_model <- function(x) {
+  x <- tolower(trimws(x %||% ""))
+  if (length(x) != 1L || is.na(x) || !(x %in% .NOISE_MODELS)) "constant" else x
+}
+
+# ── response adjustment of one fit group ─────────────────────────────────────
+# One blank-subtraction value and one log-scale offset for the whole group
+# (curveRcore >= 0.7.1.9000), decided by the included standards, controls and
+# test samples -- never by the blanks. All three are then put on the same
+# response axis: standards by preprocess_standards(), samples by the engines,
+# controls by pe_attach(). NULL when curveRcore predates the function (the
+# engines then keep their legacy 1e-6 floor).
+group_response_adjustment <- function(sg, bg, smg, cg, is_log_response, blank_option,
+                                      response_var = "mfi") {
+  if (!"compute_response_adjustment" %in% getNamespaceExports("curveRcore")) return(NULL)
+  inc <- function(d) {
+    if (is.null(d) || !nrow(d)) return(NULL)
+    d$included <- if ("masked" %in% names(d)) !(as.logical(d$masked) %in% TRUE) else TRUE
+    d
+  }
+  # control_for_fit can list a well once per standard source; count it once.
+  if (!is.null(cg) && nrow(cg) && "well" %in% names(cg)) cg <- cg[!duplicated(cg$well), , drop = FALSE]
+  curveRcore::compute_response_adjustment(
+    standards = inc(sg), response_variable = response_var,
+    is_log_response = is_log_response,
+    samples = inc(smg), controls = inc(cg),
+    blank_data = inc(bg), blank_option = blank_option,
+    include_col = "included")
+}
+
 
 # ── settings from CLI params ─────────────────────────────────────────────────
 build_models <- function(p) {
@@ -413,6 +450,13 @@ fit_one_group <- function(gb, method, is_bayes, seed, job_id, per_fit) {
     sg$included <- !(as.logical(sg$masked) %in% TRUE)
     if (nrow(bg)) bg$included <- !(as.logical(bg$masked) %in% TRUE)
 
+    adj <- group_response_adjustment(sg, bg, smg, gb$cg,
+                                     is_log_response = gb$study_params$is_log_response,
+                                     blank_option = gb$bo)
+    if (!is.null(adj) && adj$offset > 0)
+      message(sprintf("  %s: %d response(s) <= 0; offset %.4g added to every well",
+                      gb$tag, adj$n_nonpositive, adj$offset))
+
     pp <- preprocess_standards(
       data = sg, blank_data = if (nrow(bg)) bg else NULL,
       antigen_settings = list(standard_curve_concentration = gb$sc),
@@ -420,7 +464,11 @@ fit_one_group <- function(gb, method, is_bayes, seed, job_id, per_fit) {
       is_log_response = gb$study_params$is_log_response,
       is_log_independent = gb$study_params$is_log_independent,
       apply_prozone = gb$study_params$apply_prozone,
-      blank_option = gb$bo, include_col = "included")
+      blank_option = gb$bo, include_col = "included",
+      response_adjustment = adj)
+    # The adjustment as used (with response_floor), for the engines' samples
+    # and the controls. NULL on a curveRcore without it.
+    adj <- pp$response_adjustment %||% adj
 
     std_fit <- .fit_cols(pp$data[pp$data$included %in% TRUE, , drop = FALSE])
     blk_fit <- if (!nrow(bg)) NULL else {
@@ -442,6 +490,7 @@ fit_one_group <- function(gb, method, is_bayes, seed, job_id, per_fit) {
         persist_draws = gb$persist_draws,
         bayes_single_plate = gb$bayes_single_plate,
         decision_cutoff = gb$decision_cutoff,
+        noise_model = gb$noise_model, response_adjustment = adj,
         run_loo = TRUE, verbose = FALSE)
     } else {
       mp <- curveRfreq::fit_calibration_freq_multiplate(
@@ -453,6 +502,7 @@ fit_one_group <- function(gb, method, is_bayes, seed, job_id, per_fit) {
         persist_draws = gb$persist_draws,
         decision_cutoff = gb$decision_cutoff,
         n_interval_draws = gb$n_interval_draws,
+        noise_model = gb$noise_model, response_adjustment = adj,
         interval_seed = seed)
     }
 
@@ -484,7 +534,8 @@ fit_one_group <- function(gb, method, is_bayes, seed, job_id, per_fit) {
       flat <- tryCatch(pe_attach(flat, gb$cg,
                          is_log_response = gb$study_params$is_log_response,
                          is_log_independent = gb$study_params$is_log_independent,
-                         include_measurement_error = gb$inc_me, job_id = job_id),
+                         include_measurement_error = gb$inc_me, job_id = job_id,
+                         response_adjustment = adj),
                        error = function(e) {
                          message("  point estimates skipped for ", gb$tag, ": ", conditionMessage(e))
                          flat
@@ -631,7 +682,12 @@ main <- function() {
       # fit_one_group as a low-cost safety net.
       sc = .as_num(sget(rep_cid, "standard_curve_concentration", NULL), NA_real_),
       bo = .valid_blank_option(pick("blank_option",
-             sget(rep_cid, "blank_option", NULL), run_blank_option)))
+             sget(rep_cid, "blank_option", NULL), run_blank_option)),
+      # Response noise model (curveRbayes/curveRfreq >= 0.6.0): "constant"
+      # (default, unchanged behaviour) or "add_prop" (sqrt(sigma_add^2 +
+      # (cv * mu)^2), recommended for absorbance). CLI over cascade.
+      noise_model = .valid_noise_model(pick("noise_model",
+             sget(rep_cid, "noise_model", NULL), "constant")))
   }
   bundles <- lapply(gids, build_bundle)
 

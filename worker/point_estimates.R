@@ -18,7 +18,11 @@
 #   grid        curve_id, method, log10_concentration, concentration, se_concentration
 #   diag        calib_diagnostics row(s)
 #   draws       curve_id, method, term, param_scope, draws (list column)
-#   noise_model curve_id, method, use_hetero
+#   noise_model curve_id, method, noise_model ("constant" | "add_prop"; NA =
+#               constant, e.g. fits from before curveR 0.6.0)
+#   adjustment  curve_id, method, blank_value, offset, response_floor -- the
+#               response adjustment of the fit (calib_run.params
+#               response_adjustment); absent/NA = none (pre-0.6.0 fits)
 #   x_scale     curve_id, method, log_x
 #   settings    curve_id, param_name, value_text
 #   standards   calib_standards rows (response_model, nominal concentration, ...)
@@ -33,22 +37,43 @@ pe_as_bool <- function(x, default) {
   if (is.na(x[1])) default else x[1] %in% c("true", "t", "1", "yes")
 }
 
+pe_num1 <- function(x, default) {
+  v <- suppressWarnings(as.numeric(x))
+  if (length(v) && is.finite(v[1])) v[1] else default
+}
+
+# The fit's response adjustment for one curve (row of L$adjustment), or NULL.
+pe_adjustment <- function(a) {
+  if (!is.data.frame(a) || !nrow(a)) return(NULL)
+  out <- list(blank_value = pe_num1(a$blank_value, 0), offset = pe_num1(a$offset, 0),
+              response_floor = pe_num1(a$response_floor, NA_real_))
+  if (!is.finite(out$response_floor)) out$response_floor <- NULL
+  out
+}
+
 pe_available <- function()
   requireNamespace("curveRcore", quietly = TRUE) &&
     "estimate_points_from_stored" %in% getNamespaceExports("curveRcore")
 
+# Population draws the observation model needs (both noise models).
+pe_noise_terms <- function() c("sigma_obs", "nu", "sigma_add", "cv")
+
 pe_est_cols <- function() curveRcore::point_estimates_contract("standards", estimates_only = TRUE)$column
 
 # Response scale of a curve: inferred from its standards (response_model vs the
-# raw response) when unambiguous, else the resolved setting.
-pe_is_log_response <- function(std, setting) {
+# raw response, after the fit's blank subtraction and offset) when unambiguous,
+# else the resolved setting.
+pe_is_log_response <- function(std, setting, adj = NULL) {
   if (!is.data.frame(std) || !nrow(std)) return(setting)
   rm <- suppressWarnings(as.numeric(std$response_model))
   raw <- suppressWarnings(as.numeric(std$assay_response_raw))
+  bv <- pe_num1(adj$blank_value, 0)
+  raw_lin <- raw - bv
+  raw <- raw_lin + pe_num1(adj$offset, 0)
   ok <- is.finite(rm) & is.finite(raw) & raw > 0
   if (sum(ok) >= 2L) {
     d_log <- stats::median(abs(rm[ok] - log10(raw[ok])))
-    d_lin <- stats::median(abs(rm[ok] - raw[ok]))
+    d_lin <- stats::median(abs(rm[ok] - raw_lin[ok]))
     if (d_log < 1e-6) return(TRUE)
     if (d_lin < 1e-6) return(FALSE)
   }
@@ -83,7 +108,8 @@ pe_compute_one <- function(L, cid, method, model_name, job_id) {
   xs <- sel(L$x_scale)
   log_x <- if (is.data.frame(xs) && nrow(xs) && !is.na(xs$log_x[1])) isTRUE(as.logical(xs$log_x[1]))
            else sv("is_log_independent", TRUE)
-  log_y <- pe_is_log_response(std, sv("is_log_response", TRUE))
+  adj <- pe_adjustment(sel(L$adjustment))
+  log_y <- pe_is_log_response(std, sv("is_log_response", TRUE), adj)
 
   dr <- sel(L$draws)
   has_dr <- is.data.frame(dr) && nrow(dr)
@@ -99,10 +125,13 @@ pe_compute_one <- function(L, cid, method, model_name, job_id) {
     pop <- dr[dr$param_scope == "population", , drop = FALSE]
     g <- function(t) if (t %in% pop$term) as.numeric(pop$draws[[match(t, pop$term)]]) else NULL
     nm <- sel(L$noise_model)
+    nm <- if (is.data.frame(nm) && nrow(nm)) as.character(nm$noise_model[1]) else NA_character_
+    # sigma_obs is drawn under both models (prior-only under add_prop), so its
+    # length still aligns the noise with the curve draws.
     if (!is.null(g("sigma_obs")) && !is.null(g("nu")))
-      noise <- list(sigma_obs = g("sigma_obs"), nu = g("nu"), log_sigma0 = g("log_sigma0"),
-                    log_sigma_slope = g("log_sigma_slope"),
-                    use_hetero = pe_as_bool(if (is.data.frame(nm) && nrow(nm)) nm$use_hetero else NULL, FALSE))
+      noise <- list(sigma_obs = g("sigma_obs"), nu = g("nu"),
+                    noise_model = if (identical(nm, "add_prop")) "add_prop" else "constant",
+                    sigma_add = g("sigma_add"), cv = g("cv"))
   }
   lim_cols <- c("lloq_log10", "uloq_log10", "lower_lod_response", "upper_lod_response",
                 "lower_lod_log10_conc", "upper_lod_log10_conc", "inflect_x")
@@ -116,7 +145,7 @@ pe_compute_one <- function(L, cid, method, model_name, job_id) {
     curveRcore::estimate_points_from_stored(
       response, dilution, model_name, params, method,
       grid = sel(L$grid), limits = limits, draws = curve_draws, fixed_a = fixed_a,
-      noise = noise, is_log_independent = log_x, nominal = nominal,
+      noise = noise, is_log_independent = log_x, is_log_response = log_y, nominal = nominal,
       cv_x_max = num("cv_x_max", 150), pcov_threshold = num("pcov_threshold", 20),
       decision_cutoff = num("decision_cutoff", NULL), seed = seed)
 
@@ -135,7 +164,11 @@ pe_compute_one <- function(L, cid, method, model_name, job_id) {
     ct <- ct[!duplicated(ct$well), , drop = FALSE]
     ct <- ct[order(as.character(ct$well)), , drop = FALSE]
     raw <- suppressWarnings(as.numeric(ct$mfi))
-    resp <- if (log_y) log10(pmax(raw, 1e-6)) else raw
+    # Same transform as the fit's standards and samples (blank subtraction,
+    # offset, floor). Fits without an adjustment keep the legacy 1e-6 floor.
+    resp <- if ("transform_sample_response" %in% getNamespaceExports("curveRcore"))
+              curveRcore::transform_sample_response(raw, log_y, adj)
+            else if (log_y) log10(pmax(raw, 1e-6)) else raw
     dil <- suppressWarnings(as.numeric(ct$dilution)); dil[!is.finite(dil)] <- 1
     e <- est(resp, dil, seed = as.integer((cid + 1) %% 2147483647))
     out$sources <- c(out$sources, attr(e, "se_source"))
@@ -156,7 +189,7 @@ pe_compute_one <- function(L, cid, method, model_name, job_id) {
 # and the group's control_for_fit rows: the same rows save_calib() is about to
 # store, so the result equals what the backfill would compute from the database.
 pe_L_from_flat <- function(flat, controls, is_log_response, is_log_independent,
-                           include_measurement_error) {
+                           include_measurement_error, response_adjustment = NULL) {
   fit <- flat$fit
   best <- if (is.data.frame(fit) && nrow(fit)) fit[fit$is_best %in% TRUE, c("curve_id", "method", "model_name")] else NULL
   on_best <- function(d) {
@@ -171,7 +204,7 @@ pe_L_from_flat <- function(flat, controls, is_log_response, is_log_independent,
   # NROW: a Bayesian fit saved without draws (persist_draws = FALSE, the
   # default) has draws = NULL, and nrow(NULL) is NULL, not 0.
   if (NROW(dr)) dr <- dr[dr$param_scope == "curve" |
-                         dr$term %in% c("sigma_obs", "nu", "log_sigma0", "log_sigma_slope"), , drop = FALSE]
+                         dr$term %in% pe_noise_terms(), , drop = FALSE]
   list(
     best = best,
     params = on_best(flat$param),
@@ -179,7 +212,16 @@ pe_L_from_flat <- function(flat, controls, is_log_response, is_log_independent,
     diag = flat$diagnostics,
     draws = dr,
     noise_model = data.frame(curve_id = ids, method = rep(flat$method, length(ids)),
-                             use_hetero = rep(pe_as_bool(meta$use_heteroscedastic_noise, FALSE), length(ids))),
+                             noise_model = rep(as.character(meta$noise_model %||% NA_character_)[1],
+                                               length(ids)),
+                             stringsAsFactors = FALSE),
+    adjustment = {
+      a <- response_adjustment %||% meta$response_adjustment
+      data.frame(curve_id = ids, method = rep(flat$method, length(ids)),
+                 blank_value = rep(pe_num1(a$blank_value, 0), length(ids)),
+                 offset = rep(pe_num1(a$offset, 0), length(ids)),
+                 response_floor = rep(pe_num1(a$response_floor, NA_real_), length(ids)))
+    },
     x_scale = data.frame(curve_id = ids, method = rep(flat$method, length(ids)),
                          log_x = rep(isTRUE(is_log_independent), length(ids))),
     settings = data.frame(
@@ -196,8 +238,9 @@ pe_L_from_flat <- function(flat, controls, is_log_response, is_log_independent,
 # best fit in `flat`. Curves without a fit (no parameters) keep empty estimates;
 # a later backfill run fills them. Returns `flat` with attr "pe_sources".
 pe_attach <- function(flat, controls, is_log_response, is_log_independent,
-                      include_measurement_error, job_id) {
-  L <- pe_L_from_flat(flat, controls, is_log_response, is_log_independent, include_measurement_error)
+                      include_measurement_error, job_id, response_adjustment = NULL) {
+  L <- pe_L_from_flat(flat, controls, is_log_response, is_log_independent, include_measurement_error,
+                      response_adjustment)
   if (is.null(L$best) || !nrow(L$best)) return(flat)
   std_out <- list(); ctl_out <- list(); sources <- character()
   for (i in seq_len(nrow(L$best))) {
