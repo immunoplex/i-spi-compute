@@ -186,3 +186,20 @@ test_that("frequentist add_prop: the blank floor uses raw blanks below the lowes
   # constant noise: no floor involved
   expect_null(meta_of(run_group(bundle(sim_group(), "constant")))$noise_params)
 })
+
+test_that("a model that failed outright on a plate does not abort the group's flatten", {
+  d <- sim_group(n_plates = 2, neg = FALSE)
+  pp <- curveRcore::preprocess_standards(d$sg, antigen_settings = list(standard_curve_concentration = 1000),
+          response_variable = "mfi", independent_variable = "concentration", is_log_response = TRUE,
+          is_log_independent = TRUE, apply_prozone = FALSE)
+  std <- pp$data[, setdiff(names(pp$data), c("included", "assay_response_raw", "masked", "multiplate_group_id"))]
+  mp <- curveRfreq::fit_calibration_freq_multiplate(std, response_var = "mfi",
+          model_names = c("logistic4", "gompertz4"), std_curve_conc = 1000, interval_seed = 1)
+  # as on MADI_P3_GAPS: one model fails on one plate and has no parameters
+  mp$plates[[1]]$ensemble$gompertz4$parameters <- NULL
+  mp$plates[[1]]$ensemble$gompertz4$converged  <- FALSE
+  flat <- flatten_result(mp, job_id = "t", method = "frequentist")
+  r <- flat$fit[flat$fit$model_name == "gompertz4" & flat$fit$curve_id == as.numeric(names(mp$plates)[1]), ]
+  expect_equal(nrow(r), 1L)
+  expect_true(is.na(r$n_params))
+})

@@ -145,7 +145,10 @@ flatten_result <- function(mp, job_id, method = NULL) {
         selection_score = sscore,
         selection_weight = swt,
         dynamic_range_log10 = .na(asm$dynamic_range_log10),
-        n_params = tryCatch(nrow(e$parameters), error = function(z) NA_integer_),
+        # nrow(NULL) is NULL, not an error: a model that failed outright on a
+        # plate has no parameters, and a zero-length column would abort the
+        # whole group's data.frame (seen on MADI_P3_GAPS, 2026-11-28).
+        n_params = if (is.data.frame(e$parameters)) nrow(e$parameters) else NA_integer_,
         job_id = job_id, stringsAsFactors = FALSE)
 
       # parameters (long): freq term/estimate/std_error[/ci]; bayes term/mean/sd/q*
